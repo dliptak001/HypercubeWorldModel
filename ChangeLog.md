@@ -1,6 +1,8 @@
 # HypercubeWorldModel - Change Log
 
 ## v1.0.0 (Sep 10, 2026)
+- Released: tag v1.0.0, wheels for Python 3.10 to 3.14 on Windows x64, Linux x86_64 and aarch64, and macOS x86_64 and arm64, plus the sdist, published to PyPI as hypercube-worldmodel 1.0.0 through the trusted publisher with digital attestations
+- Repository made public with a fresh history; README badges for the wheels build, PyPI, and Python versions on both pages
 - Python planner adapter matches the DMC protocol: rollout takes raw actions and encode_action's the block once; action_space.low / .high for CEM. State-based DMC is the documented path; paint_stripes is not a pixel encoder
 - Python SDK: pip package hypercube-worldmodel, import hypercube_worldmodel, with WorldModel, Decoder, and paint_stripes; every batched call loops in C++ with the GIL released; fit with an optional validation set; save and load share the C++ file formats, pickle for convenience; docs/Python_SDK.md, python/README.md, two examples, a 34-test suite, and a cibuildwheel workflow. The version is one string in python/hypercube_worldmodel/_version.py, checked at compile time against WorldModel::kVersion
 - WorldModel::RequestedPasses returns encoder.passes as given to Create, for hosts that serialize their own config
