@@ -1,0 +1,12 @@
+cmake-build-*/
+*.wm
+*.dec
+*.bin
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+wheelhouse/
