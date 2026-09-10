@@ -1,5 +1,8 @@
 # Hypercube World Model
 
+[![Build wheels](https://github.com/dliptak001/HypercubeWorldModel/actions/workflows/wheels.yml/badge.svg)](https://github.com/dliptak001/HypercubeWorldModel/actions/workflows/wheels.yml)
+[![PyPI](https://img.shields.io/pypi/v/hypercube-worldmodel)](https://pypi.org/project/hypercube-worldmodel/)
+[![Python](https://img.shields.io/pypi/pyversions/hypercube-worldmodel)](https://pypi.org/project/hypercube-worldmodel/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
 
