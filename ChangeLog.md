@@ -1,5 +1,9 @@
 # HypercubeWorldModel - Change Log
 
+## Unreleased
+- GitHub Release v1.0.0 created from the existing tag with the ChangeLog entry as notes and the 25 wheels and the sdist from the tag's workflow run attached
+- wheels.yml: the publish job creates the GitHub Release on every v* tag, wheels and sdist attached, notes auto-generated; a tag alone never created one
+
 ## v1.0.0 (Sep 10, 2026)
 - Released: tag v1.0.0, wheels for Python 3.10 to 3.14 on Windows x64, Linux x86_64 and aarch64, and macOS x86_64 and arm64, plus the sdist, published to PyPI as hypercube-worldmodel 1.0.0 through the trusted publisher with digital attestations
 - Repository made public with a fresh history; README badges for the wheels build, PyPI, and Python versions on both pages
