@@ -72,24 +72,8 @@ target_link_libraries(quick_start PRIVATE WorldModel)
 add_executable(vector_start examples/vector_start.cpp)
 target_link_libraries(vector_start PRIVATE VectorModel)
 
-add_executable(CompressionTest tests/CompressionTest.cpp)
-target_link_libraries(CompressionTest PRIVATE Encoder Decoder)
-
-add_executable(JepaEncoderTest tests/JepaEncoderTest.cpp)
-target_link_libraries(JepaEncoderTest PRIVATE Encoder)
-
-add_executable(JepaPredictorTest tests/JepaPredictorTest.cpp)
-target_link_libraries(JepaPredictorTest PRIVATE Encoder Predictor)
-
-add_executable(WorldModelTest tests/WorldModelTest.cpp)
-target_link_libraries(WorldModelTest PRIVATE WorldModel ThreadPool)
-
 if(MINGW)
     target_link_options(HypercubeWorldModel PRIVATE -static-libgcc -static-libstdc++)
     target_link_options(quick_start PRIVATE -static-libgcc -static-libstdc++)
     target_link_options(vector_start PRIVATE -static-libgcc -static-libstdc++)
-    target_link_options(CompressionTest PRIVATE -static-libgcc -static-libstdc++)
-    target_link_options(JepaEncoderTest PRIVATE -static-libgcc -static-libstdc++)
-    target_link_options(JepaPredictorTest PRIVATE -static-libgcc -static-libstdc++)
-    target_link_options(WorldModelTest PRIVATE -static-libgcc -static-libstdc++)
 endif()

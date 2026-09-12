@@ -66,8 +66,8 @@ through. There is no input scale.
 ## Training
 
 Train on pairs (E(xₜ), E(xₜ₊₁)). Those pairs have to come from a
-stream. Independent random fields have no next window; the i.i.d.
-draws in CompressionTest and JepaEncoderTest cannot train this map.
+stream. Independent random fields have no next window; i.i.d. draws
+cannot train this map.
 
 One batch is the same cycle the Decoder uses:
 
@@ -161,6 +161,3 @@ are different meters. E(x) cat E(a) is packed by WorldModel, not by this class.
 
 The public product face that owns Encoder plus Predictor and does
 the k-cut is [world_model.md](world_model.md).
-
-How to read a sequential-window run is [jepa_predictor_test.md](jepa_predictor_test.md).
-The number is test / identity, not the word ok.

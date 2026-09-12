@@ -205,7 +205,7 @@ public:
     /// @brief Concatenate two k-faces: E(x) then E(a).
     /// @p dst is length 2 * CodeSize(). Const and touches no member
     /// buffer, so threads may call it concurrently, each into its own
-    /// dst; replica Predictors feed on it (see WorldModelTest).
+    /// dst; replica Predictors feed on it.
     /// @throws std::invalid_argument if @p z, @p a, or @p dst is the
     ///         wrong length.
     void Pack(std::span<const float> z, std::span<const float> a,

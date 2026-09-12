@@ -464,34 +464,19 @@ scores to publish.
 
 ---
 
-## Tests and write-ups
+## Tests
 
-The C++ tests are where the design was worked out, and each one has
-its own write-up in the repository.
-
-- [CompressionTest](https://github.com/dliptak001/HypercubeWorldModel/blob/master/tests/CompressionTest.cpp): how much of a field
-  survives the cut to a k-face. Write-up:
-  [docs/compression_test.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/compression_test.md).
-- [JepaEncoderTest](https://github.com/dliptak001/HypercubeWorldModel/blob/master/tests/JepaEncoderTest.cpp): does the k-face damp
-  noise relative to content, or copy the field. Write-up:
-  [docs/jepa_encoder_test.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/jepa_encoder_test.md).
-- [JepaPredictorTest](https://github.com/dliptak001/HypercubeWorldModel/blob/master/tests/JepaPredictorTest.cpp): the Predictor on a
-  stream with no action. Write-up:
-  [docs/jepa_predictor_test.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/jepa_predictor_test.md).
-- [WorldModelTest](https://github.com/dliptak001/HypercubeWorldModel/blob/master/tests/WorldModelTest.cpp): the full WorldModel on a
-  stream with a constant action. Write-up:
-  [docs/world_model_test.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model_test.md).
+The package's own tests are
+[python/tests/test_basic.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/tests/test_basic.py):
+contract coverage on small cubes, including the save and load round
+trip against the C++ file format. The C++ smoke is
+[main.cpp](https://github.com/dliptak001/HypercubeWorldModel/blob/master/main.cpp).
 
 The component specifications are
 [docs/encoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/encoder.md),
 [docs/predictor.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/predictor.md),
 [docs/decoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/decoder.md), and
 [docs/world_model.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model.md).
-
-The package's own tests are
-[python/tests/test_basic.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/tests/test_basic.py):
-contract coverage on small cubes, including the save and load round
-trip against the C++ file format.
 
 ---
 

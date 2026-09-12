@@ -74,8 +74,8 @@ target_link_libraries(my_app PRIVATE WorldModel Decoder VectorModel)
 ```
 
 Leave Decoder out if you do not reconstruct. Leave VectorModel out if
-you paint your own fields. The test executables build alongside;
-ignore them or exclude them from your default target.
+you paint your own fields. The smoke test and the two examples build
+alongside.
 
 Building this repo directly (CLion: open, reload CMake, build, or any
 shell with the toolchain available):
@@ -95,11 +95,9 @@ will compile the same core the same way.
 | quick_start | The WorldModel program below, compiled so this page stays true |
 | vector_start | VectorModel sibling: short obs, raw-action rollout, Head |
 | HypercubeWorldModel | Smoke test of every component |
-| WorldModelTest | Many two-sine draws through the WorldModel; [world_model_test.md](world_model_test.md) |
-| JepaEncoderTest, JepaPredictorTest, CompressionTest | Component tests; see [the root README](../README.md#tests) |
 
-Every knob in the tests is a constant at the top of a source file; there
-are no command-line arguments.
+Every knob in these programs is a constant at the top of a source file;
+there are no command-line arguments.
 
 ## Quick start
 
@@ -229,9 +227,9 @@ What the training knobs do to a run is in [predictor.md](predictor.md).
 | Knob | Guidance |
 |------|----------|
 | encoder.dim | Sized to the view. A view shorter than N goes through PaintStripes |
-| k | Chooses the code length, 2ᵏ. Smaller is more compression; the tests sweep it |
+| k | Chooses the code length, 2ᵏ. Smaller is more compression |
 | encoder.output_scale | Presentation gain on the returned cube. Default 1. View and action encoders can be set independently after Create. |
-| predictor.z_max | Depth buys reach on the Predictor cube. 0 means k+1, antipodal reach on that cube; the tests go deeper |
+| predictor.z_max | Depth buys reach on the Predictor cube. 0 means k+1, antipodal reach on that cube |
 | predictor.training.lr, batch size | The gradient is a batch **sum**; scale them together |
 | predictor.training.restore_best | On for real runs; feed Observe a validation metric |
 
@@ -364,7 +362,7 @@ first epoch. FitInputScale sets one constant so the scaled codes lie
 in [−1, 1]; it is frozen after that and saved with the weights. The
 loss covers the whole field, not a prefix. What the knobs do, and how
 the reconstruction error behaves as k moves, is in
-[decoder.md](decoder.md) and [compression_test.md](compression_test.md).
+[decoder.md](decoder.md).
 
 ## VectorModel
 
@@ -576,7 +574,7 @@ continue training after Load, the schedule starts cold.
   train, each thread first LoadWeights from the WorldModel's Weights,
   then BeginBatch and Accumulate its share; afterwards the master does
   BeginBatch, AddGrad with each replica's Grad, and EndBatch. Predictor
-  is in Predictor.h; WorldModelTest runs this recipe.
+  is in Predictor.h.
 - Predict and Rollout are one forward pass per step, single-threaded.
   A sampling planner issues many thousands of them per environment
   step. Batched prediction inside the library is the obvious next
@@ -614,6 +612,5 @@ continue training after Load, the schedule starts cold.
 |-------|------|
 | Library | C++ standard library only |
 | Build | C++23 compiler, CMake 3.21 or later |
-| Tests | Same, plus a thread library for the replica pools |
 
 There are no third-party dependencies.

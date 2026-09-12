@@ -25,7 +25,7 @@
 | first subcube | Predictor vertices whose extra address bit is 0. Length 2ᵏ. E(x) in, predicted next E(x) out. |
 | extra bit-face | Predictor vertices whose extra address bit is 1. Length 2ᵏ. Holds E(a). |
 | ŝ | Predict(z, za): a predicted next k-face. The first subcube of the Predictor output. |
-| identity | Using zₜ itself as the guess for zₜ₊₁. See [jepa_predictor_test.md](jepa_predictor_test.md). |
+| identity | Using zₜ itself as the guess for zₜ₊₁. |
 | z_max | Predictor LCN depth. 0 means k+1. |
 | gather_span | Predictor LCN lookback window width in fields. |
 | seed | Predictor LCN weight seed. The Encoder has its own seed and ic_seed. |
@@ -135,8 +135,7 @@ and RestoreBest are the Predictor's schedule and best-weight
 snapshot. ResetTraining forgets Adam; it does not touch the Encoder.
 
 A task with no motor still runs some action picture through the
-action encoder. The two-sine mix in
-[world_model_test.md](world_model_test.md) uses a constant fill.
+action encoder. A constant fill is enough.
 
 ## Files
 
@@ -253,11 +252,6 @@ resolved snapshot and reports the view encoder's T, so a config
 rebuilt from Config() would give the action encoder N passes and a
 different E(a). Keep the config you built, or use Save; do not
 rebuild from Config(). RequestedPasses() returns the value as given.
-
-Same-song scoring without a motor is [jepa_predictor_test.md](jepa_predictor_test.md)
-(Predictor on the k-face directly). Many two-sine draws (train a mix,
-score held, constant dummy E(a)) is [world_model_test.md](world_model_test.md).
-The number is test mse/power, not the word ok.
 
 VectorModel is a third library beside this class: optional
 Normalisers, PaintStripes, encode from short vectors, raw-action

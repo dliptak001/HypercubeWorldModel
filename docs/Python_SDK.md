@@ -409,7 +409,7 @@ again = hw.Decoder.load("model.dec")
 | save(path) / Decoder.load(path) | The binary file the C++ Decoder::Save and Load use: config, input scale, weights. |
 
 What the knobs do, and how the reconstruction error behaves as k moves,
-is in [decoder.md](decoder.md) and [compression_test.md](compression_test.md).
+is in [decoder.md](decoder.md).
 
 ## VectorModel
 

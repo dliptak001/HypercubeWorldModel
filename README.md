@@ -266,20 +266,9 @@ prediction loop.
 
 ## Tests
 
-Each test is one program with its own write-up.
-
-- [CompressionTest](tests/CompressionTest.cpp): how much of a field
-  survives the cut to a k-face. Write-up:
-  [docs/compression_test.md](docs/compression_test.md).
-- [JepaEncoderTest](tests/JepaEncoderTest.cpp): does the k-face damp
-  noise relative to content, or copy the field. Write-up:
-  [docs/jepa_encoder_test.md](docs/jepa_encoder_test.md).
-- [JepaPredictorTest](tests/JepaPredictorTest.cpp): the Predictor on a
-  stream with no action. Write-up:
-  [docs/jepa_predictor_test.md](docs/jepa_predictor_test.md).
-- [WorldModelTest](tests/WorldModelTest.cpp): the full WorldModel on a
-  stream with a constant action. Write-up:
-  [docs/world_model_test.md](docs/world_model_test.md).
+The C++ smoke is [main.cpp](main.cpp), built as HypercubeWorldModel.
+Python contract tests are
+[python/tests/test_basic.py](python/tests/test_basic.py).
 
 The component specifications are [docs/encoder.md](docs/encoder.md),
 [docs/predictor.md](docs/predictor.md),

@@ -26,9 +26,8 @@ python python/examples/plan_toy.py
 
 ## What these are not
 
-- **Not** the C++ programs (the smoke test, quick_start, WorldModelTest)
-  or the study write-ups. Those live under
-  [tests/](../../tests/) and [docs/](../../docs/).
+- **Not** the C++ programs (the smoke test, quick_start, vector_start).
+  Those live under [examples/](../../examples/) and the repo root.
 - **Not** automated tests. Package tests are
   [tests/test_basic.py](../tests/test_basic.py).
 - **Not** hard tasks. The toy world is easy onboarding so the API is
