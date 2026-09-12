@@ -63,11 +63,6 @@ public:
     /// @throws std::invalid_argument if @p input_field is not length N.
     void Forward(std::span<const float> input_field);
 
-    /// @brief Pointer form of @ref Forward. @p input_field must point at
-    /// N floats; the length cannot be checked.
-    /// @throws std::invalid_argument if @p input_field is null.
-    void Forward(const float* input_field);
-
     /// Output field of the most recent @ref Forward. Length N; zeros
     /// before the first call. Valid until the next Forward.
     [[nodiscard]] const std::vector<float>& Output() const { return o_; }
@@ -97,12 +92,10 @@ public:
     ///         @ref Weights().size() long.
     void LoadWeights(std::span<const float> weights);
 
-    /// @brief Pointer form of @ref LoadWeights.
-    /// @throws std::invalid_argument if @p data is null or @p count
-    ///         is not @ref Weights().size().
+private:
+    void Forward(const float* input_field);
     void LoadWeights(const float* data, size_t count);
 
-private:
     /// Base of the N-float table for (depth z, axis, tap k). Weights are
     /// stored depth, axis, tap, vertex so this table is contiguous and the
     /// vertex loop in Forward and Backward runs over adjacent floats.

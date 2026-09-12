@@ -28,11 +28,6 @@
 /// @throws std::invalid_argument if @p act_dim is 0.
 [[nodiscard]] size_t MinK(size_t act_dim);
 
-/// @brief Raise if @p d exceeds @p limit, naming both numbers.
-/// @return @p d.
-/// @throws std::invalid_argument with "{what} last-dim {d} > {limit_name} {limit}".
-size_t RequireLastDim(size_t d, size_t limit, const char* what, const char* limit_name);
-
 /// @brief Vector front-end on a WorldModel: short obs/act in, codes out.
 ///
 /// Always paints with PaintStripes. Optional obs/act Normaliser. Rollout
@@ -51,6 +46,9 @@ class VectorModel
 public:
     static constexpr char kMagic[4] = {'H', 'V', 'M', '1'};
     static constexpr uint32_t kFileVersion = 2;
+
+    /// Build a WorldModel from @p cfg and take ownership of it.
+    static std::unique_ptr<VectorModel> Create(const WorldModelConfig& cfg);
 
     /// Take ownership of @p wm.
     static std::unique_ptr<VectorModel> Create(std::unique_ptr<WorldModel> wm);
@@ -72,6 +70,8 @@ public:
     VectorModel(const VectorModel&) = delete;
     VectorModel& operator=(const VectorModel&) = delete;
 
+    /// Underlying WorldModel: encoder scales, replica weights, HWM1 save.
+    /// Training, sizes, encode, predict, and rollout are on VectorModel.
     [[nodiscard]] WorldModel& World() { return *wm_; }
     [[nodiscard]] const WorldModel& World() const { return *wm_; }
 
@@ -106,6 +106,8 @@ public:
 
     [[nodiscard]] size_t FieldSize() const { return wm_->FieldSize(); }
     [[nodiscard]] size_t CodeSize() const { return wm_->CodeSize(); }
+    [[nodiscard]] size_t K() const { return wm_->K(); }
+    [[nodiscard]] const WorldModelConfig& Config() const { return wm_->Config(); }
 
     /// One observation vector. Writes CodeSize() into @p dst.
     const float* Encode(std::span<const float> obs, std::span<float> dst);
@@ -113,7 +115,9 @@ public:
     /// One raw action vector. Writes CodeSize() into @p dst.
     const float* EncodeAction(std::span<const float> a, std::span<float> dst);
 
-    const float* Predict(std::span<const float> z, std::span<const float> za);
+    /// Codes in, next view code into @p dst. Same contract as WorldModel::Predict.
+    const float* Predict(std::span<const float> z, std::span<const float> za,
+                         std::span<float> dst);
 
     /// Raw-action rollout. @p z0 is CodeSize(); @p actions is H × act_dim
     /// laid end to end; @p out is (H+1) × CodeSize(). H may be 0.
@@ -123,8 +127,20 @@ public:
     /// Score a rollout. If there is exactly one Head, uses its PlanCost.
     /// Else if @p goal_z is CodeSize() long, L2 of the last code vs the
     /// goal. @p zs is (batch × (H+1) × code); @p out is batch long.
-    void Cost(std::span<const float> zs, size_t batch, size_t h1,
-              std::span<float> out, std::span<const float> goal_z = {}) const;
+    void Cost(std::span<const float> zs, std::span<float> out,
+              std::span<const float> goal_z = {}) const;
+
+    void BeginBatch() { wm_->BeginBatch(); }
+    float Accumulate(std::span<const float> z, std::span<const float> za,
+                     std::span<const float> next)
+    {
+        return wm_->Accumulate(z, za, next);
+    }
+    void EndBatch() { wm_->EndBatch(); }
+    void SetEpoch(int epoch, int num_epochs = 0) { wm_->SetEpoch(epoch, num_epochs); }
+    void Observe(float metric, int epoch) { wm_->Observe(metric, epoch); }
+    void RestoreBest() { wm_->RestoreBest(); }
+    void ResetTraining() { wm_->ResetTraining(); }
 
 private:
     VectorModel() = default;

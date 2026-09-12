@@ -231,7 +231,7 @@ What the training knobs do to a run is in [predictor.md](predictor.md).
 | encoder.output_scale | Presentation gain on the returned cube. Default 1. View and action encoders can be set independently after Create. |
 | predictor.z_max | Depth buys reach on the Predictor cube. 0 means k+1, antipodal reach on that cube |
 | predictor.training.lr, batch size | The gradient is a batch **sum**; scale them together |
-| predictor.training.restore_best | On for real runs; feed Observe a validation metric |
+| predictor.training.restore_best | Default on. Feed Observe a validation metric |
 
 ### Sizes
 
@@ -240,8 +240,7 @@ wm->FieldSize();    // N = 2^dim, length of a view field
 wm->CodeSize();     // 2^k, length of a code, of an action picture, and of E(a)
 wm->K();
 WorldModel::kVersion; // library version string, "1.1.0"
-wm->Config();       // resolved WorldModelConfig
-wm->ActionEncoderConfig();
+wm->Config();       // as given (passes of 0 stays 0); predictor.z_max is resolved
 ```
 
 ### Encode
@@ -265,12 +264,13 @@ buffer's data pointer. The model keeps no code.
 
 ### Predict and Rollout
 
-Predict takes one pair and returns the predicted next view code.
-Rollout chains Predict over H action codes, each already through
-EncodeAction, and writes H + 1 view codes, the first being the start.
+Predict takes one pair and writes the predicted next view code into
+a buffer you own, same as Encode. Rollout chains Predict over H
+action codes, each already through EncodeAction, and writes H + 1
+view codes, the first being the start.
 
 ```cpp
-const float* hat = wm->Predict(z, za);   // 2^k floats, until the next Predict, Rollout, or Accumulate
+wm->Predict(z, za, hat);                 // hat: 2^k floats you own
 wm->Rollout(z0, actions, out);           // actions: H codes end to end. out: H + 1 codes, out[0] = z0
 wm->Pack(z, za, packed);                 // what the Predictor sees, 2^(k+1) floats; rarely needed
 ```
@@ -342,7 +342,7 @@ dec->CodeSize();               // 2^k, same as wm->CodeSize()
 dec->FieldSize();              // N, same as wm->FieldSize()
 
 dec->FitInputScale(all_codes); // once, over the training codes laid end to end
-const float* out = dec->Decode(z);   // N floats, until the next Decode or Accumulate
+dec->Decode(z, field);             // field: N floats you own
 
 dec->BeginBatch();
 float e = dec->Accumulate(z, field); // one pair: code in, the field it came from as target
@@ -370,19 +370,20 @@ Authoritative signatures live in **VectorModel.h**, **Normaliser.h**,
 **Head.h**, and **Metrics.h**. This is the host-oriented map. A host
 that already has a field uses WorldModel and skips this class.
 
-Create takes ownership of a WorldModel. Attach is a non-owning view
+Create(cfg) builds and owns a WorldModel. Create(unique_ptr) takes
+ownership of one you already have. Attach is a non-owning view
 (the WorldModel must outlive the VectorModel). Load reads an `HVM1`
 file, or a bare `HWM1` as wm-only.
 
 ```cpp
-auto vm = VectorModel::Create(WorldModel::Create(cfg));   // owns the WorldModel
+auto vm = VectorModel::Create(cfg);                       // builds and owns the WorldModel
+auto vm2 = VectorModel::Create(WorldModel::Create(cfg));  // same, if you already have a WorldModel
 auto view = VectorModel::Attach(*wm);                     // wm must outlive view
 auto again = VectorModel::Load("model.hvm");
 vm->Save("model.hvm");
 
 size_t MinDim(obs_dim);   // max(6, ceil(log2(obs_dim))); floor, not a config
 size_t MinK(act_dim);     // max(5, ceil(log2(act_dim)))
-RequireLastDim(d, limit, "obs", "N");   // throws naming both numbers
 ```
 
 Optional attachments: obs/act Normaliser, action bounds the planner
@@ -398,10 +399,10 @@ vm->SetObsDim(obs_dim);
 vm->SetActDim(act_dim);
 
 Head h(Head::Sign::Cost);                                // LCN on the code cube
-h.Fit(z, code, y, count);                               // za omitted is the default
-h.Apply(z, dst);
+h.Fit(z, code_size, y);                                 // count is y.size(); za omitted is the default
+h.Predict(z, dst);                                      // one scalar per code
 Head::Score s = h.ScoreOn(z, y);                        // R²; AUC only if y is strictly 0/1 both classes
-h.PlanCost(zs, batch, h1, out);                         // sum excluding z0, signed
+h.PlanCost(zs, out);                                    // out is batch long; H+1 inferred from zs
 vm->SetHead("dist2", h);
 ```
 
@@ -413,9 +414,10 @@ PlanCost, or L2 of the last code to a goal.
 ```cpp
 vm->Encode(obs, z);                 // optional norm, PaintStripes, WorldModel::Encode
 vm->EncodeAction(a, za);
-vm->Predict(z, za);
+vm->Predict(z, za, hat);
+vm->BeginBatch(); vm->Accumulate(z, za, next); vm->EndBatch();  // same cycle as WorldModel
 vm->Rollout(z0, actions, out);      // actions: H × act_dim; out: (H+1) × code
-vm->Cost(zs, batch, h1, out);       // or pass goal_z of CodeSize()
+vm->Cost(zs, out);                  // one Head, or pass goal_z of CodeSize()
 ```
 
 Health metrics are free functions, not methods. RankMe (SVD) is not
@@ -426,7 +428,7 @@ NoChangeMse(z, zn);
 OneStepRatio(mse, z, zn);
 MeasureActionSensitivity(*vm, z, count, mse, seed);   // samples in action bounds if set
 LinearR2On(z, y, z_val, y_val, train_n, val_n, z_dim, y_dim);
-RolloutErrorFromCodes(z_pred, z_true, windows, h1, code);
+RolloutErrorFromCodes(z_pred, z_true, windows, path_len, code_size);  // path_len is H+1
 ```
 
 Worked program: [examples/vector_start.cpp](../examples/vector_start.cpp).
@@ -451,13 +453,10 @@ Worked program: [examples/vector_start.cpp](../examples/vector_start.cpp).
 
 ## Driving the model from a planner
 
-A sampling planner needs a small surface from a model: encode a view,
-encode an action, step a code, roll a code out over a plan, and score
-the result. **VectorModel** is that surface for short-vector hosts.
-WorldModel.Rollout still takes action **codes**. VectorModel.Rollout
-takes **raw** actions, paints them, EncodeAction's the block once, then
-calls WorldModel::Rollout. Scoring is a named Head, or L2 to a goal
-code. WorldModel never sees action bounds.
+**VectorModel** is the planner surface for short-vector hosts.
+WorldModel.Rollout takes action **codes**; VectorModel.Rollout takes
+**raw** actions. Scoring is a named Head, or L2 to a goal code.
+WorldModel never sees action bounds.
 
 A sampling planner maps onto the SDK like this:
 
@@ -532,16 +531,11 @@ instance reproduce the original exactly; the quick start checks all
 three on a fresh transition. The Python package reads and writes the
 same file.
 
-One detail matters if you serialize a config yourself instead of
-using Save. A passes of 0 means a full tour of whichever cube the
-encoder sits on, so the view encoder resolves it to N and the action
-encoder to 2ᵏ. Config() returns the resolved snapshot: after a
-passes = 0 Create it reports N. Feeding that snapshot back to Create
-gives the action encoder N passes instead of 2ᵏ, and E(a) becomes a
-different map. Save writes passes as it was given, 0 included, so the
-file does not have this problem. Keep the config you built, or use
-Save, and do not rebuild from Config(). RequestedPasses() returns the
-value as given for a host that must serialize its own config.
+A passes of 0 means a full tour of whichever cube the encoder sits
+on: the view encoder runs N passes, the action encoder 2ᵏ. Config()
+keeps passes as given (0 stays 0), so feeding Config() back to Create
+rebuilds the same pair. Save writes that same value. RequestedPasses()
+is Config().encoder.passes.
 
 | Mechanism | What is stored | Optimizer state? |
 |-----------|----------------|------------------|
@@ -570,11 +564,12 @@ continue training after Load, the schedule starts cold.
   and give each thread its own Predictor built from the WorldModel's
   config: dim k+1, and the same z_max, gather_span, tanh_last, seed,
   and training. Each thread Packs through the shared WorldModel into
-  its own buffer and calls Predict or Accumulate on its Predictor. To
+  its own buffer and calls Predict(z, hat) or Accumulate on its Predictor. To
   train, each thread first LoadWeights from the WorldModel's Weights,
   then BeginBatch and Accumulate its share; afterwards the master does
   BeginBatch, AddGrad with each replica's Grad, and EndBatch. Predictor
-  is in Predictor.h.
+  is in Predictor.h. ThreadPool (ThreadPool.h) is a persistent worker
+  set if you want one; it is not required.
 - Predict and Rollout are one forward pass per step, single-threaded.
   A sampling planner issues many thousands of them per environment
   step. Batched prediction inside the library is the obvious next

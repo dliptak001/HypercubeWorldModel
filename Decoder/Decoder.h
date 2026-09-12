@@ -44,7 +44,7 @@ struct DecoderConfig
     uint64_t seed = 934791766227647176;
 
     /// Adam and schedule settings for the LCNTraining the Decoder owns.
-    LCNTrainingConfig training;
+    LCNTrainingConfig training{.restore_best = true};
 };
 
 /// @brief Invert a compressed encoder state: code in, field out.
@@ -62,7 +62,7 @@ struct DecoderConfig
 ///
 /// Inference:
 /// ```
-///   const float* out = dec.Decode(code);      // N floats
+///   dec.Decode(code, field);      // field: N floats
 /// ```
 /// Training, one batch:
 /// ```
@@ -100,10 +100,11 @@ public:
     Decoder& operator=(Decoder&&) = delete;
 
     /// @brief Inference. Places @p code and runs the LCN forward.
-    /// The returned pointer is the reconstructed field, N floats, valid
-    /// until the next Decode or Accumulate.
-    /// @throws std::invalid_argument if @p code is not CodeSize() long.
-    const float* Decode(std::span<const float> code);
+    /// Writes the reconstructed field into @p dst (FieldSize()) and
+    /// returns dst.data().
+    /// @throws std::invalid_argument if @p code is not CodeSize() long
+    ///         or @p dst is not FieldSize() long.
+    const float* Decode(std::span<const float> code, std::span<float> dst);
 
     /// @brief Clear the accumulated gradient. Call at the start of a batch.
     void BeginBatch();

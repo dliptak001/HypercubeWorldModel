@@ -310,11 +310,9 @@ PYBIND11_MODULE(_core, m)
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < zi.count; ++i)
-                {
-                    const float* hat = self.Predict(std::span<const float>(zi.data + i * c, c),
-                                                    std::span<const float>(ai.data + i * c, c));
-                    std::memcpy(o + i * c, hat, c * sizeof(float));
-                }
+                    self.Predict(std::span<const float>(zi.data + i * c, c),
+                                 std::span<const float>(ai.data + i * c, c),
+                                 std::span<float>(o + i * c, c));
             }
             return out;
         }, py::arg("z"), py::arg("za"), "Predicted next view codes, one row per pair.")
@@ -479,10 +477,8 @@ PYBIND11_MODULE(_core, m)
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < in.count; ++i)
-                {
-                    const float* f = self.Decode(std::span<const float>(in.data + i * c, c));
-                    std::memcpy(o + i * n, f, n * sizeof(float));
-                }
+                    self.Decode(std::span<const float>(in.data + i * c, c),
+                                std::span<float>(o + i * n, n));
             }
             return out;
         }, py::arg("codes"), "Reconstructed fields, one row per code. Shape (rows, field_size).")
@@ -639,7 +635,7 @@ PYBIND11_MODULE(_core, m)
             self.Fit(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
                      code,
                      std::span<const float>(static_cast<const float*>(yb.ptr), count),
-                     count, za_span, epochs, batch);
+                     epochs, batch, za_span);
         }, py::arg("z"), py::arg("y"), py::arg("za") = py::none(),
             py::arg("epochs") = 40, py::arg("batch") = 32)
         .def("apply", [](const Head& self, FloatArray z, std::optional<FloatArray> za) {
@@ -658,8 +654,8 @@ PYBIND11_MODULE(_core, m)
             py::array_t<float> out(static_cast<py::ssize_t>(count));
             {
                 py::gil_scoped_release release;
-                self.Apply(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
-                           std::span<float>(out.mutable_data(), count), za_span);
+                self.Predict(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
+                             std::span<float>(out.mutable_data(), count), za_span);
             }
             return out;
         }, py::arg("z"), py::arg("za") = py::none())
@@ -703,7 +699,7 @@ PYBIND11_MODULE(_core, m)
                 py::gil_scoped_release release;
                 self.PlanCost(std::span<const float>(static_cast<const float*>(b.ptr),
                                                      batch * h1 * code),
-                              batch, h1, std::span<float>(out.mutable_data(), batch));
+                              std::span<float>(out.mutable_data(), batch));
             }
             return out;
         }, py::arg("zs"))
@@ -866,11 +862,9 @@ PYBIND11_MODULE(_core, m)
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < zi.count; ++i)
-                {
-                    const float* hat = self.Predict(std::span<const float>(zi.data + i * c, c),
-                                                    std::span<const float>(ai.data + i * c, c));
-                    std::memcpy(o + i * c, hat, c * sizeof(float));
-                }
+                    self.Predict(std::span<const float>(zi.data + i * c, c),
+                                 std::span<const float>(ai.data + i * c, c),
+                                 std::span<float>(o + i * c, c));
             }
             return out;
         }, py::arg("z"), py::arg("za"))
@@ -922,7 +916,7 @@ PYBIND11_MODULE(_core, m)
                 py::gil_scoped_release release;
                 self.Cost(std::span<const float>(static_cast<const float*>(b.ptr),
                                                  batch * h1 * code),
-                          batch, h1, std::span<float>(out.mutable_data(), batch), goal);
+                          std::span<float>(out.mutable_data(), batch), goal);
             }
             return out;
         }, py::arg("zs"), py::arg("goal_z") = py::none());

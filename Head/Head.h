@@ -14,7 +14,7 @@
 /// @brief Trained map from a code (optionally plus an action code) to one
 /// number: cost, reward, value, distance — whatever y the host supplies.
 ///
-/// The map is an LCN on the code's cube. Apply is output vertex 0.
+/// The map is an LCN on the code's cube. Predict is output vertex 0.
 /// Fit trains that vertex against y (LCN prefix loss of length 1).
 /// sign tells PlanCost whether to negate, so a planner always
 /// minimises. za is optional: when present it is packed on the extra
@@ -61,19 +61,19 @@ public:
     Head& operator=(Head&&) noexcept;
     ~Head();
 
-    /// @brief Fit on @p count rows of codes @p z (count × code, row-major)
-    /// against scalar @p y (count). @p za is empty (omitted) or the same
-    /// layout as @p z.
+    /// @brief Fit on codes @p z (count × code_size, row-major) against
+    /// scalar @p y (count). @p za is empty (omitted) or the same layout
+    /// as @p z. count is y.size().
     /// @throws std::invalid_argument on empty data, length mismatch, or a
     ///         code size the LCN will not take.
-    void Fit(std::span<const float> z, size_t code, std::span<const float> y,
-             size_t count, std::span<const float> za = {},
-             int epochs = 40, size_t batch = 32);
+    void Fit(std::span<const float> z, size_t code_size, std::span<const float> y,
+             int epochs = 40, size_t batch = 32, std::span<const float> za = {});
 
-    /// @brief Predict. @p z is one code or many concatenated; @p dst has
-    /// one value per row. @p za must be present iff Fit saw za.
-    void Apply(std::span<const float> z, std::span<float> dst,
-               std::span<const float> za = {}) const;
+    /// @brief Predict a scalar per code. @p z is one code or many
+    /// concatenated; @p dst has one value per row. @p za must be present
+    /// iff Fit saw za.
+    void Predict(std::span<const float> z, std::span<float> dst,
+                 std::span<const float> za = {}) const;
 
     /// R² against @p y. AUC when y is strictly 0/1 and both classes are
     /// present (ties count 0.5).
@@ -82,11 +82,10 @@ public:
 
     /// @brief Planner cost: predicted y summed over the rollout excluding
     /// z0, negated for a reward head. @p zs is (batch × (H+1) × code)
-    /// row-major; @p out is batch long.
+    /// row-major; @p out is batch long. batch and H+1 are inferred.
     /// @throws std::invalid_argument if this Head was fit with za (view
     ///         codes only), or if lengths do not match.
-    void PlanCost(std::span<const float> zs, size_t batch, size_t h1,
-                  std::span<float> out) const;
+    void PlanCost(std::span<const float> zs, std::span<float> out) const;
 
     [[nodiscard]] Sign GetSign() const { return cfg_.sign; }
     [[nodiscard]] const Config& GetConfig() const { return cfg_; }
@@ -96,7 +95,7 @@ public:
     [[nodiscard]] const LCN& Net() const;
 
     /// Rebuild a fitted Head from saved LCN weights.
-    static Head FromState(const Config& cfg, bool uses_za, size_t code,
+    static Head FromState(const Config& cfg, bool uses_za, size_t code_size,
                           std::span<const float> weights);
 
 private:

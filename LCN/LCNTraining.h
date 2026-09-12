@@ -59,16 +59,6 @@ public:
     /// @throws std::invalid_argument if @p target is empty or longer than N.
     float Loss(std::span<const float> target);
 
-    /// Pointer form: full-width loss, @p target must point at N floats.
-    /// @throws std::invalid_argument if @p target is null.
-    float Loss(const float* target);
-
-    /// Pointer form of the masked loss; @p target points at
-    /// @p target_count floats.
-    /// @throws std::invalid_argument if @p target is null or
-    ///         @p target_count is not in [1, N].
-    float Loss(const float* target, size_t target_count);
-
     /// Backprop the most recent @ref Loss through every depth,
     /// accumulating into the gradient. Consumes the loss seed: another
     /// Backward first needs another @ref Loss (against the same Forward
@@ -118,6 +108,9 @@ public:
     [[nodiscard]] const LCNTrainingConfig& Config() const { return cfg_; }
 
 private:
+    float Loss(const float* target);
+    float Loss(const float* target, size_t target_count);
+
     LCN& core_;
     LCNTrainingConfig cfg_;
     float lr_;

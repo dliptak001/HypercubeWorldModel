@@ -61,8 +61,9 @@ struct RolloutError
 };
 
 /// Open-loop latent error at each horizon vs no-change. @p z_pred and
-/// @p z_true are (windows × (H+1) × code) row-major; row 0 is z0.
+/// @p z_true are (windows × path_len × code_size) row-major; row 0 is z0.
+/// @p path_len is H+1.
 [[nodiscard]] RolloutError RolloutErrorFromCodes(std::span<const float> z_pred,
                                                  std::span<const float> z_true,
-                                                 size_t windows, size_t h1,
-                                                 size_t code);
+                                                 size_t windows, size_t path_len,
+                                                 size_t code_size);

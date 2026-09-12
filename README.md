@@ -313,7 +313,8 @@ wm->BeginBatch();
 wm->Accumulate(z, za, z_next);   // one training pair
 wm->EndBatch();                  // one Adam step
 
-const float* hat = wm->Predict(z, za);   // predicted next code, 2ᵏ floats
+std::vector<float> hat(wm->CodeSize());
+wm->Predict(z, za, hat);                 // predicted next code, 2ᵏ floats
 wm->Rollout(z, actions, path);           // H action codes in, H+1 view codes out
 wm->Save("model.wm");                    // config and Predictor weights
 
@@ -322,7 +323,8 @@ dcfg.dim = dim;                          // the encoder's cube
 dcfg.k = k;                              // the WorldModel's k
 auto dec = Decoder::Create(dcfg);
 dec->Accumulate(z, field);               // one training pair: code in, field back
-const float* rebuilt = dec->Decode(hat); // N floats from a predicted code
+std::vector<float> rebuilt(wm->FieldSize());
+dec->Decode(hat, rebuilt);               // N floats from a predicted code
 ```
 
 ```python

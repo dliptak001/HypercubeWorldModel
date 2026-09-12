@@ -43,7 +43,7 @@ struct WorldModelPredictorConfig
     uint64_t seed = 934791766227647176;
 
     /// Adam and schedule settings for the Predictor.
-    LCNTrainingConfig training;
+    LCNTrainingConfig training{.restore_best = true};
 };
 
 /// @brief Construction parameters for @ref WorldModel. All fixed at Create.
@@ -81,14 +81,14 @@ struct WorldModelConfig
 /// class's job.
 ///
 /// ```
-///   wm.Encode(x, z);                      // x: FieldSize(); z: CodeSize()
-///   wm.EncodeAction(a_field, za);         // a_field and za: CodeSize()
-///   const float* hat = wm.Predict(z, za); // hat: CodeSize()
+///   wm.Encode(x, z);              // x: FieldSize(); z: CodeSize()
+///   wm.EncodeAction(a_field, za); // a_field and za: CodeSize()
+///   wm.Predict(z, za, hat);       // hat: CodeSize()
 /// ```
 /// Encode does not keep a code. Two windows need two buffers or the
-/// second Encode overwrites the first. Predict's pointer is valid until
-/// the next Predict, Rollout, or Accumulate. Rollout chains Predict over
-/// a sequence of action codes into caller storage.
+/// second Encode overwrites the first. Predict writes into a buffer
+/// you own, same as Encode. Rollout chains Predict over a sequence of
+/// action codes into caller storage.
 ///
 /// A view or action given as a short vector rather than a field goes
 /// through @ref PaintStripes first. Save and Load carry the config and
@@ -107,6 +107,8 @@ struct WorldModelConfig
 /// One instance is not thread-safe for concurrent public calls, except
 /// Pack: const and no member buffer, so threads may Pack concurrently
 /// into distinct dst buffers.
+class VectorModel;
+
 class WorldModel
 {
 public:
@@ -133,14 +135,6 @@ public:
     /// written.
     /// @throws std::runtime_error if the file cannot be written.
     void Save(const std::filesystem::path& file) const;
-
-    /// Same payload as @ref Save to a path, written to an already-open
-    /// binary stream. Used by VectorModel to embed a WorldModel.
-    void Save(std::ostream& os) const;
-
-    /// @brief Read a WorldModel from an already-open binary stream.
-    /// @p source is the name used in error messages.
-    static std::unique_ptr<WorldModel> Load(std::istream& is, std::string_view source);
 
     WorldModel(const WorldModel&) = delete;
     WorldModel& operator=(const WorldModel&) = delete;
@@ -181,13 +175,13 @@ public:
     ///         CodeSize() long.
     const float* EncodeAction(std::span<const float> field, std::span<float> dst);
 
-    /// @brief Predict the next k-face. @p z is E(x), @p a is E(a);
-    /// both length CodeSize().
-    /// @return Predicted next k-face (first subcube), until the next
-    ///         Predict, Rollout, or Accumulate. Rollout calls Predict,
-    ///         so after a Rollout the pointer holds its last step.
-    /// @throws std::invalid_argument if @p z or @p a is not CodeSize() long.
-    const float* Predict(std::span<const float> z, std::span<const float> a);
+    /// @brief Predict the next k-face. @p z is E(x), @p za is E(a);
+    /// both length CodeSize(). Writes the first subcube into @p dst
+    /// (CodeSize()) and returns dst.data().
+    /// @throws std::invalid_argument if @p z, @p za, or @p dst is not
+    ///         CodeSize() long.
+    const float* Predict(std::span<const float> z, std::span<const float> za,
+                         std::span<float> dst);
 
     /// @brief Chain Predict over a sequence of action codes.
     /// @p z0 is E(x) at the start, length CodeSize(). @p actions is H
@@ -195,7 +189,6 @@ public:
     /// already through EncodeAction. Writes H + 1 codes into @p out,
     /// length (H + 1) * CodeSize(): out[0] is z0, out[t + 1] is the
     /// prediction from out[t] and actions[t]. H may be 0.
-    /// The Predict pointer is invalidated.
     /// @throws std::invalid_argument if @p z0 is not CodeSize() long,
     ///         @p actions is not a multiple of CodeSize(), or @p out is
     ///         not (H + 1) * CodeSize() long.
@@ -206,9 +199,9 @@ public:
     /// @p dst is length 2 * CodeSize(). Const and touches no member
     /// buffer, so threads may call it concurrently, each into its own
     /// dst; replica Predictors feed on it.
-    /// @throws std::invalid_argument if @p z, @p a, or @p dst is the
+    /// @throws std::invalid_argument if @p z, @p za, or @p dst is the
     ///         wrong length.
-    void Pack(std::span<const float> z, std::span<const float> a,
+    void Pack(std::span<const float> z, std::span<const float> za,
               std::span<float> dst) const;
 
     /// @brief Clear the accumulated gradient. Call at the start of a batch.
@@ -218,9 +211,9 @@ public:
     /// the first subcube against @p next, Backward. Extra bit-face
     /// unconstrained.
     /// @return The sample loss, 0.5 * SSE over the k-face.
-    /// @throws std::invalid_argument if @p z, @p a, or @p next is not
+    /// @throws std::invalid_argument if @p z, @p za, or @p next is not
     ///         CodeSize() long.
-    float Accumulate(std::span<const float> z, std::span<const float> a,
+    float Accumulate(std::span<const float> z, std::span<const float> za,
                      std::span<const float> next);
 
     /// @brief One Adam step on the accumulated gradient.
@@ -259,18 +252,15 @@ public:
 
     [[nodiscard]] size_t K() const { return cfg_.k; }
 
-    /// The resolved config (encoder.passes and predictor.z_max already filled in).
-    /// encoder.passes here is the view encoder's T. Do not feed this
-    /// snapshot back to Create: a passes given as 0 resolves to N here
-    /// but to 2^k on the action encoder, so a rebuild from Config()
-    /// would give the action encoder N passes. Use Save / Load, or keep
-    /// the config you built.
+    /// Config as given to Create, except predictor.z_max is resolved
+    /// (0 already replaced by k+1). encoder.passes is as given, 0
+    /// included: feeding this snapshot back to Create rebuilds the same
+    /// pair of encoders. Current view output_scale is reflected here;
+    /// the action encoder's scale is ActionOutputScale().
     [[nodiscard]] const WorldModelConfig& Config() const { return cfg_; }
 
-    /// encoder.passes as it was given to Create, 0 included. This is what
-    /// Save writes, and what a host that serializes its own config should
-    /// keep: Config().encoder.passes is the view encoder's resolved T and
-    /// would give the action encoder the wrong T on a rebuild.
+    /// encoder.passes as given to Create, 0 included. Same value as
+    /// Config().encoder.passes. What Save writes.
     [[nodiscard]] size_t RequestedPasses() const { return requested_passes_; }
 
     /// The action encoder's resolved config: cfg.encoder with dim = k.
@@ -295,6 +285,12 @@ public:
     [[nodiscard]] float ActionRealizedSpectralRadius() const;
 
 private:
+    friend class VectorModel;
+
+    /// Stream form used by VectorModel to embed a WorldModel payload.
+    void Save(std::ostream& os) const;
+    static std::unique_ptr<WorldModel> Load(std::istream& is, std::string_view source);
+
     explicit WorldModel(const WorldModelConfig& cfg);
 
     WorldModelConfig cfg_;
@@ -303,6 +299,7 @@ private:
     std::unique_ptr<Encoder> act_enc_;
     std::unique_ptr<Predictor> pred_;
     std::vector<float> packed_;
+    std::vector<float> pred_out_;
     const float* last_cube_ = nullptr;
     bool has_packed_ = false;
 };

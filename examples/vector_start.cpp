@@ -37,11 +37,10 @@ int main()
     cfg.predictor.training.lr_min_frac = 0.05f;
     cfg.predictor.training.restore_best = true;
 
-    auto vm = VectorModel::Create(WorldModel::Create(cfg));
+    auto vm = VectorModel::Create(cfg);
     const float lo[2] = {-1.f, -1.f}, hi[2] = {1.f, 1.f};
     vm->SetActionBounds(lo, hi);
-    WorldModel& wm = vm->World();
-    const size_t c = wm.CodeSize();
+    const size_t c = vm->CodeSize();
 
     std::mt19937 rng(0);
     std::uniform_real_distribution<float> u(-1.f, 1.f);
@@ -69,21 +68,22 @@ int main()
 
     for (int epoch = 0; epoch < kEpochs; ++epoch)
     {
-        wm.SetEpoch(epoch, kEpochs);
+        vm->SetEpoch(epoch, kEpochs);
         for (int start = 0; start < kTrain; start += kBatch)
         {
-            wm.BeginBatch();
+            vm->BeginBatch();
             for (int i = start; i < std::min(start + kBatch, kTrain); ++i)
-                wm.Accumulate(std::span<const float>(z.data() + i * c, c),
-                              std::span<const float>(za.data() + i * c, c),
-                              std::span<const float>(zn.data() + i * c, c));
-            wm.EndBatch();
+                vm->Accumulate(std::span<const float>(z.data() + i * c, c),
+                               std::span<const float>(za.data() + i * c, c),
+                               std::span<const float>(zn.data() + i * c, c));
+            vm->EndBatch();
         }
+        std::vector<float> hat(c);
         double err = 0, power = 0;
         for (int i = 0; i < kTrain; ++i)
         {
-            const float* hat = wm.Predict(std::span<const float>(z.data() + i * c, c),
-                                          std::span<const float>(za.data() + i * c, c));
+            vm->Predict(std::span<const float>(z.data() + i * c, c),
+                        std::span<const float>(za.data() + i * c, c), hat);
             for (size_t j = 0; j < c; ++j)
             {
                 const float d = hat[j] - zn[i * c + j];
@@ -91,12 +91,12 @@ int main()
                 power += zn[i * c + j] * zn[i * c + j];
             }
         }
-        wm.Observe(static_cast<float>(err / power), epoch);
+        vm->Observe(static_cast<float>(err / power), epoch);
     }
-    wm.RestoreBest();
+    vm->RestoreBest();
 
     Head head;
-    head.Fit(zn, c, y, kTrain, {}, 40, 16);
+    head.Fit(zn, c, y, 40, 16);
     const Head::Score sc = head.ScoreOn(zn, y);
     std::printf("Head R2 on toy distance %.4f\n", sc.r2);
     vm->SetHead("dist2", head);
@@ -105,7 +105,7 @@ int main()
     vm->Encode(std::span<const float>(obs.data(), 2), z0);
     vm->Rollout(z0, std::span<const float>(act.data(), 3 * 2), path);
     std::vector<float> cost(1);
-    vm->Cost(path, 1, 4, cost);
+    vm->Cost(path, cost);
     std::printf("raw-action rollout H=3 cost %.4f\n", cost[0]);
 
     const std::filesystem::path file =

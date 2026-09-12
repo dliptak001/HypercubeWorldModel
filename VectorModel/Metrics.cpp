@@ -90,10 +90,8 @@ ActionSensitivity MeasureActionSensitivity(VectorModel& vm, std::span<const floa
             for (size_t j = 0; j < ad; ++j)
                 act[j] = lo[j] + (hi[j] - lo[j]) * u(rng);
             vm.EncodeAction(act, za);
-            const float* hat = vm.Predict(zi, za);
             float* dst = (k == 0 ? p1 : p2).data() + i * c;
-            for (size_t j = 0; j < c; ++j)
-                dst[j] = hat[j];
+            vm.Predict(zi, za, std::span<float>(dst, c));
         }
     }
     return ActionSensitivityFromPreds(p1, p2, mse);
@@ -185,28 +183,28 @@ LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
 
 RolloutError RolloutErrorFromCodes(std::span<const float> z_pred,
                                    std::span<const float> z_true,
-                                   size_t windows, size_t h1, size_t code)
+                                   size_t windows, size_t path_len, size_t code_size)
 {
-    if (windows == 0 || h1 < 2 || code == 0)
+    if (windows == 0 || path_len < 2 || code_size == 0)
         throw std::invalid_argument("RolloutErrorFromCodes needs windows > 0, H+1 >= 2");
-    const size_t n = windows * h1 * code;
+    const size_t n = windows * path_len * code_size;
     if (z_pred.size() != n || z_true.size() != n)
         throw std::invalid_argument("RolloutErrorFromCodes length must be windows * (H+1) * code");
-    const size_t H = h1 - 1;
+    const size_t H = path_len - 1;
     RolloutError out;
     out.error.assign(H, 0.f);
     out.baseline.assign(H, 0.f);
     out.ratio.assign(H, 0.f);
-    const double denom = static_cast<double>(windows * code);
+    const double denom = static_cast<double>(windows * code_size);
     for (size_t h = 0; h < H; ++h)
     {
         double err = 0.0, base = 0.0;
         for (size_t w = 0; w < windows; ++w)
         {
-            const float* pred = z_pred.data() + (w * h1 + (h + 1)) * code;
-            const float* tru = z_true.data() + (w * h1 + (h + 1)) * code;
-            const float* z0 = z_true.data() + w * h1 * code;
-            for (size_t c = 0; c < code; ++c)
+            const float* pred = z_pred.data() + (w * path_len + (h + 1)) * code_size;
+            const float* tru = z_true.data() + (w * path_len + (h + 1)) * code_size;
+            const float* z0 = z_true.data() + w * path_len * code_size;
+            for (size_t c = 0; c < code_size; ++c)
             {
                 const double de = static_cast<double>(pred[c]) - static_cast<double>(tru[c]);
                 const double db = static_cast<double>(z0[c]) - static_cast<double>(tru[c]);

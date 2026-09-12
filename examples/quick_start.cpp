@@ -74,12 +74,13 @@ void Score(WorldModel& wm, const Codes& s, float& model, float& identity)
 {
     const size_t c = wm.CodeSize();
     const size_t count = s.z.size() / c;
+    std::vector<float> hat(c);
     double err = 0, id = 0, power = 0;
     for (size_t i = 0; i < count; ++i)
     {
         std::span<const float> z(s.z.data() + i * c, c), za(s.za.data() + i * c, c),
             next(s.next.data() + i * c, c);
-        const float* hat = wm.Predict(z, za);
+        wm.Predict(z, za, hat);
         for (size_t j = 0; j < c; ++j)
         {
             err += (hat[j] - next[j]) * (hat[j] - next[j]);
@@ -162,12 +163,12 @@ int main()
     PaintStripes(fresh.act, picture);
     wm->EncodeAction(picture, za1);
     again->EncodeAction(picture, za2);
-    const float* p1 = wm->Predict(z1, za1);
-    std::vector<float> keep(p1, p1 + c);
-    const float* p2 = again->Predict(z2, za2);
+    std::vector<float> p1(c), p2(c);
+    wm->Predict(z1, za1, p1);
+    again->Predict(z2, za2, p2);
     bool same = true;
     for (size_t j = 0; j < c; ++j)
-        same = same && z1[j] == z2[j] && za1[j] == za2[j] && keep[j] == p2[j];
+        same = same && z1[j] == z2[j] && za1[j] == za2[j] && p1[j] == p2[j];
     std::printf("reload encodes and predicts the same: %s\n", same ? "yes" : "no");
     return same ? 0 : 1;
 }

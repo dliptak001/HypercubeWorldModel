@@ -24,7 +24,7 @@
 | output_scale | Encoder presentation gain on the returned cube. View and action encoders have their own. Pack does not scale. |
 | first subcube | Predictor vertices whose extra address bit is 0. Length 2ᵏ. E(x) in, predicted next E(x) out. |
 | extra bit-face | Predictor vertices whose extra address bit is 1. Length 2ᵏ. Holds E(a). |
-| ŝ | Predict(z, za): a predicted next k-face. The first subcube of the Predictor output. |
+| ŝ | Predict(z, za, hat): a predicted next k-face. The first subcube of the Predictor output. |
 | identity | Using zₜ itself as the guess for zₜ₊₁. |
 | z_max | Predictor LCN depth. 0 means k+1. |
 | gather_span | Predictor LCN lookback window width in fields. |
@@ -58,7 +58,7 @@ and trained many times.
 ```
 wm.Encode(x, z);                     // x: N floats. z: 2ᵏ floats, caller-owned.
 wm.EncodeAction(a_field, za);        // a_field and za: 2ᵏ floats.
-const float* hat = wm.Predict(z, za); // hat: 2ᵏ floats.
+wm.Predict(z, za, hat);              // hat: 2ᵏ floats you own.
 ```
 
 Encode always runs a full view episode (N values) and writes the
@@ -181,15 +181,16 @@ public:
     const float* LastRawCube() const;    // unscaled full view episode
     const float* LastPacked() const;     // E(x) then E(a); after Predict / Accumulate
     const float* EncodeAction(std::span<const float> field, std::span<float> dst);
-    const float* Predict(std::span<const float> z, std::span<const float> a);
+    const float* Predict(std::span<const float> z, std::span<const float> za,
+                         std::span<float> dst);
     void Rollout(std::span<const float> z0, std::span<const float> actions,
                  std::span<float> out);  // H codes in, H + 1 codes out
     size_t RequestedPasses() const;      // encoder.passes as given; what Save writes
-    void Pack(std::span<const float> z, std::span<const float> a,
+    void Pack(std::span<const float> z, std::span<const float> za,
               std::span<float> dst) const;
 
     void  BeginBatch();
-    float Accumulate(std::span<const float> z, std::span<const float> a,
+    float Accumulate(std::span<const float> z, std::span<const float> za,
                      std::span<const float> next);
     void  EndBatch();
 
@@ -228,7 +229,7 @@ EncoderConfig with dim replaced by k, not a knob; 5 is the smallest
 cube Encoder accepts. Predictor dim is
 k+1, not a knob. Encode rejects a dst that is not CodeSize() long.
 EncodeAction rejects a field or dst that is not CodeSize() long.
-Pack rejects z or a that is not CodeSize() long, and a dst that is
+Pack rejects z or za that is not CodeSize() long, and a dst that is
 not 2 × CodeSize() long. Rollout rejects an actions span that is not
 a whole number of codes and an out span that is not one code longer.
 PaintStripes rejects an empty source or one longer than its
@@ -244,14 +245,11 @@ Predict on the reloaded instance reproduce the original exactly. The
 main smoke test checks all three across a Save and Load with passes
 left at 0.
 
-Passes needs care because 0 means a full tour of whichever cube the
-encoder sits on: the view encoder resolves it to N and the action
-encoder to 2ᵏ. Save writes passes as it was given, 0 included, so
-Load resolves it per cube the way Create did. Config() is the
-resolved snapshot and reports the view encoder's T, so a config
-rebuilt from Config() would give the action encoder N passes and a
-different E(a). Keep the config you built, or use Save; do not
-rebuild from Config(). RequestedPasses() returns the value as given.
+A passes of 0 means a full tour of whichever cube the encoder sits
+on: the view encoder runs N passes, the action encoder 2ᵏ. Save
+writes passes as given, 0 included. Config().encoder.passes is that
+same value, so Create(wm.Config()) rebuilds the same pair.
+RequestedPasses() is Config().encoder.passes.
 
 VectorModel is a third library beside this class: optional
 Normalisers, PaintStripes, encode from short vectors, raw-action

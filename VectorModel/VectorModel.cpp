@@ -139,6 +139,14 @@ size_t CeilLog2(size_t n)
     return log;
 }
 
+size_t RequireLastDim(size_t d, size_t limit, const char* what, const char* limit_name)
+{
+    if (d > limit)
+        throw std::invalid_argument(std::string(what) + " last-dim " + std::to_string(d) +
+                                    " > " + limit_name + " " + std::to_string(limit));
+    return d;
+}
+
 } // namespace
 
 size_t MinDim(size_t obs_dim)
@@ -157,12 +165,9 @@ size_t MinK(size_t act_dim)
     return log > 5 ? log : 5;
 }
 
-size_t RequireLastDim(size_t d, size_t limit, const char* what, const char* limit_name)
+std::unique_ptr<VectorModel> VectorModel::Create(const WorldModelConfig& cfg)
 {
-    if (d > limit)
-        throw std::invalid_argument(std::string(what) + " last-dim " + std::to_string(d) +
-                                    " > " + limit_name + " " + std::to_string(limit));
-    return d;
+    return Create(WorldModel::Create(cfg));
 }
 
 std::unique_ptr<VectorModel> VectorModel::Create(std::unique_ptr<WorldModel> wm)
@@ -334,9 +339,10 @@ const float* VectorModel::EncodeAction(std::span<const float> a, std::span<float
     return wm_->EncodeAction(picture_, dst);
 }
 
-const float* VectorModel::Predict(std::span<const float> z, std::span<const float> za)
+const float* VectorModel::Predict(std::span<const float> z, std::span<const float> za,
+                                  std::span<float> dst)
 {
-    return wm_->Predict(z, za);
+    return wm_->Predict(z, za, dst);
 }
 
 void VectorModel::Rollout(std::span<const float> z0, std::span<const float> actions,
@@ -358,27 +364,28 @@ void VectorModel::Rollout(std::span<const float> z0, std::span<const float> acti
     wm_->Rollout(z0, action_codes_, out);
 }
 
-void VectorModel::Cost(std::span<const float> zs, size_t batch, size_t h1,
-                       std::span<float> out, std::span<const float> goal_z) const
+void VectorModel::Cost(std::span<const float> zs, std::span<float> out,
+                       std::span<const float> goal_z) const
 {
     const size_t c = CodeSize();
-    if (batch == 0 || h1 == 0)
-        throw std::invalid_argument("VectorModel::Cost needs batch > 0 and H+1 > 0");
-    if (zs.size() != batch * h1 * c)
-        throw std::invalid_argument("VectorModel::Cost zs length must be batch * (H+1) * code");
-    if (out.size() != batch)
-        throw std::invalid_argument("VectorModel::Cost out must be batch long");
+    const size_t batch = out.size();
+    if (batch == 0 || c == 0 || zs.size() % (batch * c) != 0)
+        throw std::invalid_argument(
+            "VectorModel::Cost zs length must be batch * (H+1) * code");
+    const size_t path_len = zs.size() / (batch * c);
+    if (path_len == 0)
+        throw std::invalid_argument("VectorModel::Cost needs H+1 > 0");
 
     if (heads_.size() == 1)
     {
-        heads_.begin()->second.PlanCost(zs, batch, h1, out);
+        heads_.begin()->second.PlanCost(zs, out);
         return;
     }
     if (goal_z.size() == c)
     {
         for (size_t b = 0; b < batch; ++b)
         {
-            const float* last = zs.data() + (b * h1 + (h1 - 1)) * c;
+            const float* last = zs.data() + (b * path_len + (path_len - 1)) * c;
             double s = 0.0;
             for (size_t i = 0; i < c; ++i)
             {

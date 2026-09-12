@@ -50,7 +50,7 @@ produced the cube is [encoder.md](encoder.md).
 
 ```
 const float* out = enc.RunEpisode(x);          // x: N floats. out: N floats.
-dec.Decode(std::span(out, size_t{1} << k));    // first 2ᵏ only
+dec.Decode(std::span(out, size_t{1} << k), field);    // first 2ᵏ in, field: N out
 ```
 
 The encoder always produces a full cube. Compression is the slice.
@@ -129,9 +129,7 @@ public:
     static std::unique_ptr<Decoder> Load(const std::filesystem::path& file);
     void Save(const std::filesystem::path& file) const;
 
-    // Inference. code.size() must equal CodeSize(). Newest field,
-    // N floats, valid until the next Decode or Accumulate.
-    const float* Decode(std::span<const float> subcube);
+    const float* Decode(std::span<const float> code, std::span<float> dst);
 
     // Training cycle, one batch:
     //   BeginBatch(); for each sample: Accumulate(subcube, target); EndBatch();

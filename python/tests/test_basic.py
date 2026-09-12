@@ -107,7 +107,8 @@ def test_sizes():
 
 def test_passes_zero_resolves_per_cube():
     wm = make_wm(passes=0)
-    assert wm.passes == 2 ** DIM
+    assert wm.passes == 0
+    assert wm.config()["passes"] == 0
     assert wm.action_passes == 2 ** K
 
 

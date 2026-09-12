@@ -64,11 +64,14 @@ void Decoder::Place(std::span<const float> code)
     // field_[code_size_ .. N) was zeroed at construction and is never written
 }
 
-const float* Decoder::Decode(std::span<const float> code)
+const float* Decoder::Decode(std::span<const float> code, std::span<float> dst)
 {
+    if (dst.size() != n_)
+        throw std::invalid_argument("Decoder::Decode dst must be FieldSize() long");
     Place(code);
     net_->Forward(field_);
-    return net_->Output().data();
+    std::memcpy(dst.data(), net_->Output().data(), n_ * sizeof(float));
+    return dst.data();
 }
 
 void Decoder::BeginBatch()

@@ -46,9 +46,8 @@ struct PredictorConfig
 /// and passes that cube in. The Decoder is not part of this map.
 ///
 /// ```
-///   const float* hat = pred.Predict(z);   // z and hat: N = 2^dim floats
+///   pred.Predict(z, hat);   // z and hat: N = 2^dim floats
 /// ```
-/// The pointer is valid until the next Predict or Accumulate.
 ///
 /// Training, one batch:
 /// ```
@@ -74,11 +73,10 @@ public:
     Predictor(Predictor&&) = delete;
     Predictor& operator=(Predictor&&) = delete;
 
-    /// @brief One forward step. @p z is E(x_t), length Size().
-    /// @return Predicted next k-face, Size() floats, until the next
-    ///         Predict or Accumulate.
-    /// @throws std::invalid_argument if @p z is not Size() long.
-    const float* Predict(std::span<const float> z);
+    /// @brief One forward step. @p z is E(x_t), @p dst is the predicted
+    /// next face; both length Size(). Returns dst.data().
+    /// @throws std::invalid_argument if @p z or @p dst is not Size() long.
+    const float* Predict(std::span<const float> z, std::span<float> dst);
 
     /// @brief Clear the accumulated gradient. Call at the start of a batch.
     void BeginBatch();

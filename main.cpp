@@ -194,10 +194,10 @@ int main()
         }
         std::printf("Predictor sub=%zu loss %.4f -> %.4f\n", sub, pfirst, plast);
         if (!(plast < pfirst)) return Fail("Predictor loss did not fall");
-        const float* hat = pred->Predict(subcubes[0]);
-        if (hat == nullptr) return Fail("Predictor Predict");
+        std::vector<float> phat(sub);
+        if (pred->Predict(subcubes[0], phat) == nullptr) return Fail("Predictor Predict");
         bool pthrew = false;
-        try { std::vector<float> bad(sub / 2, 0.f); pred->Predict(bad); }
+        try { std::vector<float> bad(sub / 2, 0.f); pred->Predict(bad, phat); }
         catch (const std::invalid_argument&) { pthrew = true; }
         if (!pthrew) return Fail("Predictor Predict short z not rejected");
         pthrew = false;
@@ -240,8 +240,9 @@ int main()
 
     if (copy->InputScale() != dec->InputScale()) return Fail("round trip input scale");
     if (copy->Config().z_max != dec->Config().z_max) return Fail("round trip z_max");
-    const float* a = dec->Decode(subcubes[0]);
-    const float* b = copy->Decode(subcubes[0]);
+    std::vector<float> a(n), b(n);
+    dec->Decode(subcubes[0], a);
+    copy->Decode(subcubes[0], b);
     for (size_t i = 0; i < n; ++i)
         if (a[i] != b[i]) return Fail("round trip Decode mismatch");
     std::printf("Decoder round trip OK\n");
@@ -317,10 +318,15 @@ int main()
             w1->Save(wfile);
             auto w2 = WorldModel::Load(wfile);
             std::filesystem::remove(wfile);
+            if (w1->Config().encoder.passes != 0)
+                return Fail("WorldModel Config passes should stay 0");
             if (w2->Config().encoder.passes != w1->Config().encoder.passes)
                 return Fail("WorldModel Load view passes");
             if (w2->ActionEncoderConfig().passes != w1->ActionEncoderConfig().passes)
                 return Fail("WorldModel Load action passes");
+            auto w3 = WorldModel::Create(w1->Config());
+            if (w3->ActionEncoderConfig().passes != w1->ActionEncoderConfig().passes)
+                return Fail("WorldModel Config round-trip action T");
             std::vector<float> picture(sub, 0.5f), c1(sub), c2(sub), v1(sub), v2(sub);
             w1->EncodeAction(picture, c1);
             w2->EncodeAction(picture, c2);
@@ -332,17 +338,17 @@ int main()
             for (size_t i = 0; i < sub; ++i)
                 if (v1[i] != v2[i])
                     return Fail("WorldModel Load E(x) differs");
-            const float* h1 = w1->Predict(v1, c1);
-            std::vector<float> keep(h1, h1 + sub);
-            const float* h2 = w2->Predict(v2, c2);
+            std::vector<float> h1(sub), h2(sub);
+            w1->Predict(v1, c1, h1);
+            w2->Predict(v2, c2, h2);
             for (size_t i = 0; i < sub; ++i)
-                if (keep[i] != h2[i])
+                if (h1[i] != h2[i])
                     return Fail("WorldModel Load Predict differs");
         }
-        const float* hat = wm->Predict(latents[0], za);
-        if (hat == nullptr) return Fail("WorldModel Predict");
+        std::vector<float> hat(sub);
+        if (wm->Predict(latents[0], za, hat) == nullptr) return Fail("WorldModel Predict");
         threw = false;
-        try { std::vector<float> bada(2, 0.f); wm->Predict(latents[0], bada); }
+        try { std::vector<float> bada(2, 0.f); wm->Predict(latents[0], bada, hat); }
         catch (const std::invalid_argument&) { threw = true; }
         if (!threw) return Fail("WorldModel Predict short a not rejected");
         threw = false;
@@ -449,16 +455,6 @@ int main()
 
     if (MinDim(6) != 6 || MinDim(67) != 7 || MinK(2) != 5 || MinK(38) != 6)
         return Fail("MinDim/MinK floors");
-    threw = false;
-    try { RequireLastDim(7, 6, "obs", "N"); }
-    catch (const std::invalid_argument& e)
-    {
-        threw = true;
-        const std::string msg = e.what();
-        if (msg.find('7') == std::string::npos || msg.find('6') == std::string::npos)
-            return Fail("capacity error must name both sizes");
-    }
-    if (!threw) return Fail("RequireLastDim 7>6 did not throw");
 
     {
         // LCN Head reads vertex 0 of a 16-cube; y is that vertex.
@@ -471,13 +467,13 @@ int main()
             y[i] = z[i * code];
         }
         Head qh;
-        qh.Fit(z, code, y, n, {}, 40, 16);
+        qh.Fit(z, code, y, 40, 16);
         const Head::Score qs = qh.ScoreOn(z, y);
         std::printf("Head toy-readout R2 %.4f\n", qs.r2);
         if (!(qs.r2 > 0.7f)) return Fail("Head toy-readout R2 too low");
         if (!qh.Fitted()) return Fail("Head did not fit");
         threw = false;
-        try { std::vector<float> dummy(n); qh.Apply(z, dummy, z); }
+        try { std::vector<float> dummy(n); qh.Predict(z, dummy, z); }
         catch (const std::invalid_argument&) { threw = true; }
         if (!threw) return Fail("Head za omitted path accepted za");
     }
@@ -494,24 +490,41 @@ int main()
         const size_t c = vm->CodeSize();
         std::vector<float> obs{0.2f, -0.3f}, act{0.1f, -0.2f};
         std::vector<float> z(c), za(c);
+        threw = false;
+        try
+        {
+            std::vector<float> too_big(vm->FieldSize() + 1, 0.f);
+            std::vector<float> dst(c);
+            vm->Encode(too_big, dst);
+        }
+        catch (const std::invalid_argument& e)
+        {
+            threw = true;
+            const std::string msg = e.what();
+            if (msg.find(std::to_string(vm->FieldSize() + 1)) == std::string::npos ||
+                msg.find(std::to_string(vm->FieldSize())) == std::string::npos)
+                return Fail("capacity error must name both sizes");
+        }
+        if (!threw) return Fail("Encode obs longer than N did not throw");
+
         vm->Encode(obs, z);
         vm->EncodeAction(act, za);
-        const float* hat = vm->Predict(z, za);
-        if (hat == nullptr) return Fail("VectorModel Predict");
+        std::vector<float> hat(c);
+        if (vm->Predict(z, za, hat) == nullptr) return Fail("VectorModel Predict");
         std::vector<float> path(2 * c);
         vm->Rollout(z, act, path);   // H=1
         if (path[0] != z[0]) return Fail("VectorModel Rollout z0");
 
         Head dist;
         std::vector<float> y{0.1f};
-        dist.Fit(z, c, y, 1, {}, 4, 1);
+        dist.Fit(z, c, y, 4, 1);
         threw = false;
         try { vm->SetHead("empty", Head()); }
         catch (const std::invalid_argument&) { threw = true; }
         if (!threw) return Fail("VectorModel SetHead unfitted not rejected");
         vm->SetHead("dist2", dist);
         std::vector<float> cost(1);
-        vm->Cost(path, 1, 2, cost);
+        vm->Cost(path, cost);
 
         const std::filesystem::path vfile =
             std::filesystem::temp_directory_path() / "hypercube_vector_model_smoke.hvm";

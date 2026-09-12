@@ -76,8 +76,10 @@ WorldModel::WorldModel(const WorldModelConfig& cfg)
     pred_ = Predictor::Create(pcfg);
 
     cfg_.encoder = enc_->Config();
+    cfg_.encoder.passes = requested_passes_;
     cfg_.predictor.z_max = pred_->Config().z_max;
     packed_.resize(pred_->Size());
+    pred_out_.resize(pred_->Size());
 }
 
 const float* WorldModel::Encode(std::span<const float> field, std::span<float> dst)
@@ -129,30 +131,37 @@ const float* WorldModel::EncodeAction(std::span<const float> field, std::span<fl
     return dst.data();
 }
 
-void WorldModel::Pack(std::span<const float> z, std::span<const float> a,
+void WorldModel::Pack(std::span<const float> z, std::span<const float> za,
                       std::span<float> dst) const
 {
     const size_t sub = CodeSize();
     if (z.size() != sub)
         throw std::invalid_argument(
             "WorldModel::Pack z must be CodeSize() long");
-    if (a.size() != sub)
+    if (za.size() != sub)
         throw std::invalid_argument(
-            "WorldModel::Pack a must be CodeSize() long");
+            "WorldModel::Pack za must be CodeSize() long");
     if (dst.size() != pred_->Size())
         throw std::invalid_argument(
             "WorldModel::Pack dst must be 2 * CodeSize() long");
     for (size_t i = 0; i < sub; ++i)
         dst[i] = z[i];
     for (size_t i = 0; i < sub; ++i)
-        dst[sub + i] = a[i];
+        dst[sub + i] = za[i];
 }
 
-const float* WorldModel::Predict(std::span<const float> z, std::span<const float> a)
+const float* WorldModel::Predict(std::span<const float> z, std::span<const float> za,
+                                 std::span<float> dst)
 {
-    Pack(z, a, packed_);
+    const size_t sub = CodeSize();
+    if (dst.size() != sub)
+        throw std::invalid_argument(
+            "WorldModel::Predict dst must be CodeSize() long");
+    Pack(z, za, packed_);
     has_packed_ = true;
-    return pred_->Predict(packed_);
+    pred_->Predict(packed_, pred_out_);
+    std::memcpy(dst.data(), pred_out_.data(), sub * sizeof(float));
+    return dst.data();
 }
 
 void WorldModel::Rollout(std::span<const float> z0, std::span<const float> actions,
@@ -175,10 +184,7 @@ void WorldModel::Rollout(std::span<const float> z0, std::span<const float> actio
     {
         const std::span<const float> z(out.data() + t * sub, sub);
         const std::span<const float> a(actions.data() + t * sub, sub);
-        const float* hat = Predict(z, a);
-        float* next = out.data() + (t + 1) * sub;
-        for (size_t i = 0; i < sub; ++i)
-            next[i] = hat[i];
+        Predict(z, a, std::span<float>(out.data() + (t + 1) * sub, sub));
     }
 }
 
@@ -310,13 +316,13 @@ void WorldModel::BeginBatch()
     pred_->BeginBatch();
 }
 
-float WorldModel::Accumulate(std::span<const float> z, std::span<const float> a,
+float WorldModel::Accumulate(std::span<const float> z, std::span<const float> za,
                              std::span<const float> next)
 {
     if (next.size() != CodeSize())
         throw std::invalid_argument(
             "WorldModel::Accumulate next must be CodeSize() long");
-    Pack(z, a, packed_);
+    Pack(z, za, packed_);
     has_packed_ = true;
     return pred_->Accumulate(packed_, next);
 }

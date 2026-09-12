@@ -86,11 +86,8 @@ still apply.
 Inference is one Forward:
 
 ```
-const float* hat = pred.Predict(z);    // z: N floats. hat: N floats.
+pred.Predict(z, hat);    // z and hat: N floats you own
 ```
-
-The pointer is the LCN output, valid until the next Predict or
-Accumulate.
 
 ## Files
 
@@ -121,9 +118,7 @@ class Predictor
 public:
     static std::unique_ptr<Predictor> Create(const PredictorConfig& cfg);
 
-    // Inference. z.size() must equal Size(). Newest k-face, N floats,
-    // valid until the next Predict or Accumulate.
-    const float* Predict(std::span<const float> z);
+    const float* Predict(std::span<const float> z, std::span<float> dst);
 
     // Training cycle, one batch:
     //   BeginBatch(); for each pair: Accumulate(z_t, z_next); EndBatch();

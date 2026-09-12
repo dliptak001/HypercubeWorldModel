@@ -140,27 +140,26 @@ float Head::Readout() const
     return net_->Output()[0];
 }
 
-void Head::Fit(std::span<const float> z, size_t code, std::span<const float> y,
-               size_t count, std::span<const float> za, int epochs, size_t batch)
+void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float> y,
+               int epochs, size_t batch, std::span<const float> za)
 {
-    if (code == 0)
-        throw std::invalid_argument("Head::Fit code must be > 0");
+    if (code_size == 0)
+        throw std::invalid_argument("Head::Fit code_size must be > 0");
+    const size_t count = y.size();
     if (count == 0)
         throw std::invalid_argument("Head::Fit needs at least one row");
-    if (z.size() != count * code)
-        throw std::invalid_argument("Head::Fit z length must be count * code");
-    if (y.size() != count)
-        throw std::invalid_argument("Head::Fit y length must be count");
+    if (z.size() != count * code_size)
+        throw std::invalid_argument("Head::Fit z length must be count * code_size");
     if (epochs <= 0)
         throw std::invalid_argument("Head::Fit epochs must be > 0");
     if (batch == 0)
         throw std::invalid_argument("Head::Fit batch must be > 0");
     uses_za_ = !za.empty();
-    if (uses_za_ && za.size() != count * code)
-        throw std::invalid_argument("Head::Fit za length must be count * code");
-    code_ = code;
+    if (uses_za_ && za.size() != count * code_size)
+        throw std::invalid_argument("Head::Fit za length must be count * code_size");
+    code_ = code_size;
 
-    const size_t field_n = uses_za_ ? 2 * code : code;
+    const size_t field_n = uses_za_ ? 2 * code_size : code_size;
     EnsureNet(field_n);
 
     LCNTrainingConfig tc;
@@ -188,7 +187,7 @@ void Head::Fit(std::span<const float> z, size_t code, std::span<const float> y,
             for (size_t t = start; t < end; ++t)
             {
                 const size_t i = idx[t];
-                Pack(z.data() + i * code, uses_za_ ? za.data() + i * code : nullptr, field);
+                Pack(z.data() + i * code_size, uses_za_ ? za.data() + i * code_size : nullptr, field);
                 net_->Forward(field);
                 target[0] = y[i];
                 epoch_loss += static_cast<double>(train.Loss(target));
@@ -204,19 +203,19 @@ void Head::Fit(std::span<const float> z, size_t code, std::span<const float> y,
     fitted_ = true;
 }
 
-void Head::Apply(std::span<const float> z, std::span<float> dst,
-                 std::span<const float> za) const
+void Head::Predict(std::span<const float> z, std::span<float> dst,
+                   std::span<const float> za) const
 {
     if (!fitted_ || !net_)
-        throw std::invalid_argument("Head::Apply requires Fit");
+        throw std::invalid_argument("Head::Predict requires Fit");
     if (code_ == 0 || z.size() % code_ != 0)
-        throw std::invalid_argument("Head::Apply z length must be a multiple of code");
+        throw std::invalid_argument("Head::Predict z length must be a multiple of code");
     const size_t count = z.size() / code_;
     if (dst.size() != count)
-        throw std::invalid_argument("Head::Apply dst must have one value per row");
+        throw std::invalid_argument("Head::Predict dst must have one value per row");
     CheckZa(!za.empty());
     if (uses_za_ && za.size() != count * code_)
-        throw std::invalid_argument("Head::Apply za length must be count * code");
+        throw std::invalid_argument("Head::Predict za length must be count * code");
 
     std::vector<float> field(net_->N());
     for (size_t i = 0; i < count; ++i)
@@ -233,7 +232,7 @@ Head::Score Head::ScoreOn(std::span<const float> z, std::span<const float> y,
     if (y.size() == 0)
         throw std::invalid_argument("Head::ScoreOn y must not be empty");
     std::vector<float> p(y.size());
-    Apply(z, p, za);
+    Predict(z, p, za);
     double ymean = 0.0;
     for (float v : y)
         ymean += static_cast<double>(v);
@@ -290,30 +289,30 @@ Head::Score Head::ScoreOn(std::span<const float> z, std::span<const float> y,
     return s;
 }
 
-void Head::PlanCost(std::span<const float> zs, size_t batch, size_t h1,
-                    std::span<float> out) const
+void Head::PlanCost(std::span<const float> zs, std::span<float> out) const
 {
     if (uses_za_)
         throw std::invalid_argument(
             "plan_cost scores view codes only; this Head was fit with za");
     if (!fitted_ || !net_)
         throw std::invalid_argument("Head::PlanCost requires Fit");
-    if (batch == 0 || h1 < 2)
-        throw std::invalid_argument("Head::PlanCost needs batch > 0 and H+1 >= 2");
-    if (zs.size() != batch * h1 * code_)
-        throw std::invalid_argument("Head::PlanCost zs length must be batch * (H+1) * code");
-    if (out.size() != batch)
-        throw std::invalid_argument("Head::PlanCost out must be batch long");
+    const size_t batch = out.size();
+    if (batch == 0 || code_ == 0 || zs.size() % (batch * code_) != 0)
+        throw std::invalid_argument(
+            "Head::PlanCost zs length must be batch * (H+1) * code");
+    const size_t path_len = zs.size() / (batch * code_);
+    if (path_len < 2)
+        throw std::invalid_argument("Head::PlanCost needs H+1 >= 2");
 
-    const size_t steps = h1 - 1;
+    const size_t steps = path_len - 1;
     std::vector<float> z(batch * steps * code_);
     for (size_t b = 0; b < batch; ++b)
         for (size_t t = 0; t < steps; ++t)
             for (size_t c = 0; c < code_; ++c)
                 z[(b * steps + t) * code_ + c] =
-                    zs[(b * h1 + (t + 1)) * code_ + c];
+                    zs[(b * path_len + (t + 1)) * code_ + c];
     std::vector<float> pred(batch * steps);
-    Apply(z, pred);
+    Predict(z, pred);
     const float sgn = cfg_.sign == Sign::Reward ? -1.f : 1.f;
     for (size_t b = 0; b < batch; ++b)
     {
@@ -324,13 +323,13 @@ void Head::PlanCost(std::span<const float> zs, size_t batch, size_t h1,
     }
 }
 
-Head Head::FromState(const Config& cfg, bool uses_za, size_t code,
+Head Head::FromState(const Config& cfg, bool uses_za, size_t code_size,
                      std::span<const float> weights)
 {
     Head h(cfg);
     h.uses_za_ = uses_za;
-    h.code_ = code;
-    const size_t field_n = uses_za ? 2 * code : code;
+    h.code_ = code_size;
+    const size_t field_n = uses_za ? 2 * code_size : code_size;
     h.EnsureNet(field_n);
     h.net_->LoadWeights(weights);
     h.fitted_ = true;

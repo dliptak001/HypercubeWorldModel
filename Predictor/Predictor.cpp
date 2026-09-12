@@ -3,6 +3,7 @@
 
 #include "Predictor.h"
 
+#include <cstring>
 #include <stdexcept>
 
 std::unique_ptr<Predictor> Predictor::Create(const PredictorConfig& cfg)
@@ -23,12 +24,15 @@ Predictor::Predictor(const PredictorConfig& cfg)
     n_ = net_->N();
 }
 
-const float* Predictor::Predict(std::span<const float> z)
+const float* Predictor::Predict(std::span<const float> z, std::span<float> dst)
 {
     if (z.size() != n_)
         throw std::invalid_argument("Predictor::Predict z must be Size() long");
+    if (dst.size() != n_)
+        throw std::invalid_argument("Predictor::Predict dst must be Size() long");
     net_->Forward(z);
-    return net_->Output().data();
+    std::memcpy(dst.data(), net_->Output().data(), n_ * sizeof(float));
+    return dst.data();
 }
 
 void Predictor::BeginBatch()
