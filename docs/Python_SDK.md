@@ -451,6 +451,7 @@ writes.
 | rollout(z0, actions) | VectorModel: raw (B, H, act_dim) | encodes the block once, then WorldModel.rollout on codes |
 | action_space.low / .high | VectorModel.action_space | planner clips here; the WorldModel never sees bounds |
 | cost(zs, goal) | VectorModel.cost / Head.plan_cost | a fitted Head, or L2 of the last code to a goal code |
+| obs_norm / act_norm / heads | copies | mutating a copy does not change the VectorModel; set_head to put a fitted Head back |
 
 A goal is a view like any other: encode it and compare codes, or fit a
 Head on a host y. [python/examples/plan_toy.py](../python/examples/plan_toy.py)
@@ -474,7 +475,7 @@ Typical mistakes:
 | ValueError on a float knob | spectral_radius, leak_rate, input_scaling, output_scale, lr, and eps must be finite; a NaN is rejected even under fast-math |
 | ValueError on encode | The field must be N long; a state vector goes through paint_stripes first |
 | ValueError on encode_action | The picture must be code_size long, not N; the action cube is k, not dim |
-| ValueError on rollout | actions must be (H, code_size) for one start code, (count, H, code_size) for many, with count matching z0 |
+| ValueError on rollout | WorldModel: actions must be (H, code_size) for one start code, (count, H, code_size) for many, with count matching z0. VectorModel: raw (H, act_dim) or (count, H, act_dim); last-dim must match act_dim once that is set |
 | Loss looks huge | accumulate returns 0.5 × the **sum** of squared error over the code, summed over the rows |
 | Loss never falls | Check the cycle order, and that begin_batch runs per batch, not per epoch |
 | Two actions give the same prediction | The Predictor may be ignoring E(a); raise the action encoder's output_scale, and check that one view code with different action codes gives different predictions |

@@ -254,6 +254,8 @@ void VectorModel::SetHead(std::string name, Head h)
 {
     if (name.empty())
         throw std::invalid_argument("VectorModel Head name must not be empty");
+    if (!h.Fitted())
+        throw std::invalid_argument("VectorModel SetHead requires a fitted Head");
     heads_.insert_or_assign(std::move(name), std::move(h));
 }
 

@@ -29,8 +29,9 @@ struct ActionSensitivity
                                                            std::span<const float> pred2,
                                                            float mse);
 
-/// Draw two random action batches in [-1, 1], EncodeAction, Predict, and
-/// score. Uses @p n rows or all of @p z, whichever is smaller.
+/// Draw two random action batches, EncodeAction, Predict, and score.
+/// Samples in ActionLow/ActionHigh when bounds are set, else [-1, 1].
+/// Uses @p n rows or all of @p z, whichever is smaller.
 [[nodiscard]] ActionSensitivity MeasureActionSensitivity(VectorModel& vm,
                                                          std::span<const float> z,
                                                          size_t count, float mse,

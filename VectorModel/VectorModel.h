@@ -36,8 +36,8 @@ size_t RequireLastDim(size_t d, size_t limit, const char* what, const char* limi
 /// @brief Vector front-end on a WorldModel: short obs/act in, codes out.
 ///
 /// Always paints with PaintStripes. Optional obs/act Normaliser. Rollout
-/// takes raw actions (paint, EncodeAction the block once, WorldModel::Rollout
-/// on codes). Named Heads, optional action bounds. Hard capacity checks:
+/// takes raw actions: EncodeAction each step, then WorldModel::Rollout on
+/// those codes. Named Heads, optional action bounds. Hard capacity checks:
 /// obs last-dim vs N, act last-dim vs code_size, both numbers in the error.
 ///
 /// A host that already has a field uses WorldModel. Nothing here is added
@@ -88,6 +88,7 @@ public:
     [[nodiscard]] std::span<const float> ActionLow() const { return action_low_; }
     [[nodiscard]] std::span<const float> ActionHigh() const { return action_high_; }
 
+    /// @throws std::invalid_argument if @p name is empty or @p h is not fitted.
     void SetHead(std::string name, Head h);
     void RemoveHead(std::string_view name);
     [[nodiscard]] Head* GetHead(std::string_view name);

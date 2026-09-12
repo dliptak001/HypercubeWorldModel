@@ -857,6 +857,9 @@ PYBIND11_MODULE(_core, m)
             const size_t h = static_cast<size_t>(ab.shape[1]);
             const size_t ad = static_cast<size_t>(ab.shape[2]);
             RequireSameRows(zi.count, rows, "rollout");
+            if (self.ActDim() != 0 && ad != self.ActDim())
+                throw std::invalid_argument("act last-dim " + std::to_string(ad) +
+                                            " != act_dim " + std::to_string(self.ActDim()));
             if (self.ActDim() == 0)
                 self.SetActDim(ad);
             const float* a = static_cast<const float*>(ab.ptr);

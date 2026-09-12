@@ -353,6 +353,19 @@ def test_pickle_roundtrip():
     assert again.action_passes == 2 ** K
 
 
+def test_pickle_v1_action_scale_maps():
+    wm = make_wm()
+    state = wm.__getstate__()
+    ctor = dict(state["ctor"])
+    ctor["action_scale"] = 0.33
+    state["ctor"] = ctor
+    state.pop("action_output_scale", None)
+    again = hw.WorldModel.__new__(hw.WorldModel)
+    again.__setstate__(state)
+    assert abs(again.action_output_scale - 0.33) < 1e-5
+    assert abs(again.view_output_scale - 1.0) < 1e-5
+
+
 def test_load_rejects_missing_file(tmp_path):
     with pytest.raises(RuntimeError):
         hw.WorldModel.load(tmp_path / "missing.wm")
@@ -503,6 +516,21 @@ def test_head_za_optional_and_plan_cost():
     assert np.allclose(h3.plan_cost()(zs), -c)
 
 
+def test_head_auc_binary_and_ties():
+    z = np.ones((4, 4), np.float32)
+    y = np.array([0, 0, 1, 1], np.float32)
+    h = hw.Head(kind="linear").fit(z, y)
+    s = h.score(z, y)
+    assert "auc" in s
+    assert abs(s["auc"] - 0.5) < 1e-5
+    z2 = np.zeros((4, 4), np.float32)
+    z2[:, 0] = [0, 0, 1, 1]
+    h2 = hw.Head(kind="linear").fit(z2, y)
+    assert h2.score(z2, y)["auc"] > 0.9
+    cont = hw.Head(kind="linear", sign="reward").fit(z2, z2[:, 0] + 0.3)
+    assert "auc" not in cont.score(z2, z2[:, 0] + 0.3)
+
+
 def test_vector_model_encode_rollout_and_capacity():
     wm = make_wm()
     vm = hw.VectorModel(wm, action_low=[-1, -1], action_high=[1, 1])
@@ -513,6 +541,12 @@ def test_vector_model_encode_rollout_and_capacity():
     path = vm.rollout(z[0], act[:3])
     assert path.shape == (4, wm.code_size)
     np.testing.assert_array_equal(path[0], z[0])
+    with pytest.raises(ValueError) as e:
+        vm.rollout(z[0], np.zeros((3, 4), np.float32))
+    msg = str(e.value)
+    assert "4" in msg and "2" in msg
+    with pytest.raises(ValueError):
+        vm.set_head("empty", hw.Head())
     with pytest.raises(ValueError) as e:
         vm.encode(np.zeros(wm.N + 1, np.float32))
     msg = str(e.value)
@@ -564,8 +598,6 @@ def test_metrics_on_toy_batch():
     rng = np.random.default_rng(0)
     actm = hw.action_sensitivity(z, wm.predict, vm.encode_action, 2, mse, rng, n=8)
     assert "act" in actm
-    obs_ep = np.stack([obs[:8], nxt[:8]], 0)[:, :4]
-    # fake short episodes: (2, 4, 2) needs T=3 act
     obs_ep = np.zeros((2, 5, 2), np.float32)
     act_ep = np.zeros((2, 4, 2), np.float32)
     obs_ep[:, 0] = obs[:2]

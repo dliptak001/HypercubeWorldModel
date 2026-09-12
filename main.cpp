@@ -11,6 +11,7 @@
 #include "VectorModel.h"
 #include "Metrics.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -509,6 +510,10 @@ int main()
         Head dist(Head::Kind::Linear);
         std::vector<float> y{0.1f};
         dist.Fit(z, c, y, 1);
+        threw = false;
+        try { vm->SetHead("empty", Head()); }
+        catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) return Fail("VectorModel SetHead unfitted not rejected");
         vm->SetHead("dist2", dist);
         std::vector<float> cost(1);
         vm->Cost(path, 1, 2, cost);
@@ -561,6 +566,10 @@ int main()
         std::printf("metrics linR2 min %.3f mean %.3f\n", lin.min, lin.mean);
         auto asens = MeasureActionSensitivity(*vm, z, 1, mse > 0.f ? mse : 1.f, 1, 1);
         std::printf("metrics act %.3f\n", asens.act);
+        std::vector<float> z_true(path);
+        std::fill(z_true.begin() + static_cast<std::ptrdiff_t>(c), z_true.end(), 0.f);
+        auto re = RolloutErrorFromCodes(path, z_true, 1, 2, c);
+        std::printf("metrics rollout-error h1 %.5f ratio %.3f\n", re.error[0], re.ratio[0]);
         std::printf("VectorModel N=%zu code=%zu round-trip OK\n",
                     vm->FieldSize(), vm->CodeSize());
     }

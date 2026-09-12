@@ -42,6 +42,7 @@ Worked programs: [examples/quick_start.cpp](../examples/quick_start.cpp)
 - [What a step is](#what-a-step-is)
 - [API reference](#api-reference)
 - [The Decoder](#the-decoder)
+- [VectorModel](#vectormodel)
 - [Input data layout](#input-data-layout)
 - [Driving the model from a planner](#driving-the-model-from-a-planner)
 - [Error handling](#error-handling)
@@ -253,7 +254,8 @@ holds E(a); both are CodeSize() long.
 ```cpp
 std::vector<float> z(wm->CodeSize()), za(wm->CodeSize());
 wm->Encode(field, z);          // field: N floats. Writes E(x) into z.
-wm->LastCube();                // the full N-float episode behind the last Encode
+wm->LastCube();                // scaled full N-float episode behind the last Encode
+wm->LastRawCube();             // unscaled delay-line cube; presentation does not enter this
 wm->EncodeAction(picture, za); // picture: 2^k floats. Writes E(a) into za.
 
 PaintStripes(short_vector, field);    // short vector in, field out
@@ -363,6 +365,73 @@ in [−1, 1]; it is frozen after that and saved with the weights. The
 loss covers the whole field, not a prefix. What the knobs do, and how
 the reconstruction error behaves as k moves, is in
 [decoder.md](decoder.md) and [compression_test.md](compression_test.md).
+
+## VectorModel
+
+Authoritative signatures live in **VectorModel.h**, **Normaliser.h**,
+**Head.h**, and **Metrics.h**. This is the host-oriented map. A host
+that already has a field uses WorldModel and skips this class.
+
+Create takes ownership of a WorldModel. Attach is a non-owning view
+(the WorldModel must outlive the VectorModel). Load reads an `HVM1`
+file, or a bare `HWM1` as wm-only.
+
+```cpp
+auto vm = VectorModel::Create(WorldModel::Create(cfg));   // owns the WorldModel
+auto view = VectorModel::Attach(*wm);                     // wm must outlive view
+auto again = VectorModel::Load("model.hvm");
+vm->Save("model.hvm");
+
+size_t MinDim(obs_dim);   // max(6, ceil(log2(obs_dim))); floor, not a config
+size_t MinK(act_dim);     // max(5, ceil(log2(act_dim)))
+RequireLastDim(d, limit, "obs", "N");   // throws naming both numbers
+```
+
+Optional attachments: obs/act Normaliser, action bounds the planner
+clips against, named fitted Heads. SetHead rejects an unfitted Head.
+obs_dim / act_dim are noted on the first encode, or set explicitly.
+
+```cpp
+Normaliser n = Normaliser::Fit(x, dim, /*clip=*/3.f);   // (count × dim) row-major
+n.Apply(x, dst);                                        // into [-1, 1]
+vm->SetObsNormaliser(n);
+vm->SetActionBounds(low, high);
+vm->SetObsDim(obs_dim);
+vm->SetActDim(act_dim);
+
+Head h(Head::Kind::Quadratic, 1e-3f, Head::Sign::Cost);  // linear allowed
+h.Fit(z, code, y, count);                               // za omitted is the default
+h.Apply(z, dst);
+Head::Score s = h.ScoreOn(z, y);                        // R²; AUC only if y is 0/1
+h.PlanCost(zs, batch, h1, out);                         // sum excluding z0, signed
+vm->SetHead("dist2", h);
+```
+
+Encode / EncodeAction / Rollout take **raw** short vectors, not fields
+or codes. Rollout is one plan (H × act_dim); last-dim must match
+act_dim once that is set. Cost uses the single attached Head's
+PlanCost, or L2 of the last code to a goal.
+
+```cpp
+vm->Encode(obs, z);                 // optional norm, PaintStripes, WorldModel::Encode
+vm->EncodeAction(a, za);
+vm->Predict(z, za);
+vm->Rollout(z0, actions, out);      // actions: H × act_dim; out: (H+1) × code
+vm->Cost(zs, batch, h1, out);       // or pass goal_z of CodeSize()
+```
+
+Health metrics are free functions, not methods. RankMe (SVD) is not
+here.
+
+```cpp
+NoChangeMse(z, zn);
+OneStepRatio(mse, z, zn);
+MeasureActionSensitivity(*vm, z, count, mse, seed);   // samples in action bounds if set
+LinearR2On(z, y, z_val, y_val, train_n, val_n, z_dim, y_dim);
+RolloutErrorFromCodes(z_pred, z_true, windows, h1, code);
+```
+
+Worked program: [examples/vector_start.cpp](../examples/vector_start.cpp).
 
 ## Input data layout
 

@@ -600,11 +600,13 @@ class WorldModel:
                 f"Upgrade hypercube-worldmodel."
             )
         ctor = dict(state["ctor"])
-        ctor.pop("action_scale", None)
+        old_action_scale = ctor.pop("action_scale", None)
         ctor.pop("action_output_scale", None)
         self.__init__(**ctor)
         if "action_output_scale" in state:
             self.set_action_output_scale(state["action_output_scale"])
+        elif old_action_scale is not None:
+            self.set_action_output_scale(float(old_action_scale))
         self._core.load_weights(_f32(state["weights"]))
 
 
@@ -1132,6 +1134,8 @@ class VectorModel:
 
     Always paints with paint_stripes. encode / encode_action take raw vectors.
     rollout takes raw actions. Named Heads and optional action bounds live here.
+    obs_norm, act_norm, and heads are copies; set_head / the C++ setters
+    put a fitted object back.
     """
 
     def __init__(self, wm, obs_norm=None, act_norm=None,
@@ -1170,11 +1174,13 @@ class VectorModel:
 
     @property
     def obs_norm(self):
+        """Copy of the attached observation Normaliser, or None."""
         n = self._core.obs_norm()
         return None if n is None else Normaliser._wrap(n)
 
     @property
     def act_norm(self):
+        """Copy of the attached action Normaliser, or None."""
         n = self._core.act_norm()
         return None if n is None else Normaliser._wrap(n)
 
@@ -1186,6 +1192,7 @@ class VectorModel:
 
     @property
     def heads(self) -> dict:
+        """Fitted Heads by name. Each value is a copy; set_head to put one back."""
         return {name: Head._wrap(self._core.get_head(name))
                 for name in self._core.head_names()}
 
@@ -1237,6 +1244,10 @@ class VectorModel:
             aa = aa.reshape(1, *aa.shape)
         elif aa.ndim != 3:
             raise ValueError(f"actions must be 2-D or 3-D, got {aa.ndim}-D")
+        have = int(self._core.act_dim)
+        ad = int(aa.shape[-1])
+        if have != 0 and ad != have:
+            raise ValueError(f"act last-dim {ad} != act_dim {have}")
         out = self._core.rollout(zz, aa)
         return out[0] if one else out
 

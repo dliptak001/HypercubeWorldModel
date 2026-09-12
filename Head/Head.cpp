@@ -222,12 +222,8 @@ Head::Score Head::ScoreOn(std::span<const float> z, std::span<const float> y,
         else
             binary = false;
     }
-    s.positives = 0;
-    for (float v : y)
-        if (v > 0.5f)
-            ++s.positives;
-    const bool want_auc = (sign_ == Sign::Reward) || (binary && pos && neg);
-    if (!want_auc)
+    s.positives = pos;
+    if (!(binary && pos && neg))
     {
         s.auc = QuietNaN();
         s.has_auc = false;
@@ -236,22 +232,20 @@ Head::Score Head::ScoreOn(std::span<const float> z, std::span<const float> y,
     std::vector<float> pv, nv;
     for (size_t i = 0; i < y.size(); ++i)
     {
-        if (y[i] > 0.5f)
+        if (y[i] == 1.f)
             pv.push_back(p[i]);
         else
             nv.push_back(p[i]);
     }
-    if (pv.empty() || nv.empty())
-    {
-        s.auc = QuietNaN();
-        s.has_auc = true;
-        return s;
-    }
     double wins = 0.0;
     for (float a : pv)
         for (float b : nv)
+        {
             if (a > b)
                 wins += 1.0;
+            else if (a == b)
+                wins += 0.5;
+        }
     s.auc = static_cast<float>(wins / (static_cast<double>(pv.size()) *
                                        static_cast<double>(nv.size())));
     s.has_auc = true;

@@ -73,8 +73,15 @@ ActionSensitivity MeasureActionSensitivity(VectorModel& vm, std::span<const floa
         throw std::invalid_argument("MeasureActionSensitivity needs act_dim");
     n = n < count ? n : count;
     const size_t ad = vm.ActDim();
+    std::vector<float> lo(ad, -1.f), hi(ad, 1.f);
+    if (vm.HasActionBounds() && vm.ActionLow().size() == ad)
+    {
+        const auto L = vm.ActionLow(), H = vm.ActionHigh();
+        lo.assign(L.begin(), L.end());
+        hi.assign(H.begin(), H.end());
+    }
     std::mt19937_64 rng(seed);
-    std::uniform_real_distribution<float> u(-1.f, 1.f);
+    std::uniform_real_distribution<float> u(0.f, 1.f);
     std::vector<float> p1(n * c), p2(n * c), za(c), act(ad);
     for (size_t i = 0; i < n; ++i)
     {
@@ -82,7 +89,7 @@ ActionSensitivity MeasureActionSensitivity(VectorModel& vm, std::span<const floa
         for (int k = 0; k < 2; ++k)
         {
             for (size_t j = 0; j < ad; ++j)
-                act[j] = u(rng);
+                act[j] = lo[j] + (hi[j] - lo[j]) * u(rng);
             vm.EncodeAction(act, za);
             const float* hat = vm.Predict(zi, za);
             float* dst = (k == 0 ? p1 : p2).data() + i * c;

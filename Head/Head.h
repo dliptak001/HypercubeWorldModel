@@ -52,8 +52,8 @@ public:
     void Apply(std::span<const float> z, std::span<float> dst,
                std::span<const float> za = {}) const;
 
-    /// R² against @p y. AUC when y is 0/1 (or the head is a reward) and
-    /// both classes are present.
+    /// R² against @p y. AUC when y is strictly 0/1 and both classes are
+    /// present (ties count 0.5).
     [[nodiscard]] Score ScoreOn(std::span<const float> z, std::span<const float> y,
                                 std::span<const float> za = {}) const;
 
