@@ -199,6 +199,8 @@ episode goes something like this.
     GOTO LOOP
 
     After T passes, the reservoir's live output is the cube.
+    RunEpisode returns that cube times output_scale (default 1);
+    the delay line stays raw.
 
 Every episode starts from the same frozen initial condition, so the
 cube depends on the field and nothing else. Both the view and the
@@ -242,8 +244,9 @@ the same way a state vector does.
 
 The Predictor's cube has dimension k+1: twice the k-face. The extra
 address bit splits it in half. The first half carries E(x). The
-second half carries E(a), scaled by one constant so the two codes
-reach the net at a chosen ratio. Vertex i of the view sits one hop
+second half carries E(a). Pack concatenates; it does not scale.
+Each encoder has its own output_scale, a presentation gain on the
+cube it returns, default 1. Vertex i of the view sits one hop
 from vertex i of the action, so the net's first depth already sees
 both.
 
@@ -286,11 +289,12 @@ print(hw.__version__)
 ```
 
 Package name on PyPI: **hypercube-worldmodel**. Import name:
-**hypercube_worldmodel**. Main types: **hw.WorldModel** and
-**hw.Decoder**.
+**hypercube_worldmodel**. Main types: **hw.WorldModel**,
+**hw.Decoder**, and **hw.VectorModel**.
 
-The wheel compiles the C++ WorldModel and Decoder into the extension.
-It is the same net as the C++ SDK, the same files, not a port.
+The wheel compiles the C++ WorldModel, Decoder, and VectorModel into
+the extension. It is the same net as the C++ SDK, the same files, not
+a port.
 
 Wheels target Python 3.10 through 3.14 on common Windows, Linux, and
 macOS machines. Runtime dependency: NumPy only.
@@ -391,22 +395,26 @@ with batch size, the same convention as the C++ SDK.
 
 A sampling planner needs five calls from a model: encode a view,
 encode an action, step a code, roll a code out over a plan, and score
-the result. The package gives the first four; scoring is the task's.
+the result. **VectorModel** is that surface for short-vector hosts:
+encode / encode_action take raw vectors, rollout takes raw actions,
+and cost is a fitted Head or L2 to a goal code. CEM is a host
+choice, not package API.
 [python/examples/plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py)
-is that planner protocol: CEM samples raw actions, reads
+is VectorModel with CEM: it samples raw actions, reads
 action_space.low / .high, and passes those arrays to rollout.
-The adapter paints and encode_action's the block once, then
-WorldModel.rollout on the codes. This path is state-based: concatenate
-the observation into a vector, paint_stripes onto N, encode. A camera
-frame is not a field of N. Swap the environment for another
-state-based task and keep the adapter.
+This path is state-based: concatenate the observation into a vector,
+paint_stripes onto N, encode. A camera frame is not a field of N.
+Swap the environment for another state-based task and keep
+VectorModel.
 
 ---
 
 ## Features
 
-- **Two classes.** hw.WorldModel and hw.Decoder are the whole surface,
-  plus paint_stripes, mean_abs, and rms.
+- **Three product classes.** hw.WorldModel, hw.Decoder, and
+  hw.VectorModel, plus paint_stripes, Normaliser, Head, mean_abs, rms,
+  min_dim / min_k, and the health functions. Leave VectorModel out if
+  you paint your own fields.
 - **Frozen encoders.** Codes depend only on the field and the seeds;
   encode a stream once, train on it many times.
 - **fit.** Shuffle, batch, cosine schedule, restore-best with an
@@ -415,14 +423,16 @@ state-based task and keep the adapter.
   observe, restore_best, exposed one to one with the C++ API.
 - **Batched by shape.** Every method takes one row or many and returns
   the same shape; the loop runs in C++ with the GIL released.
-- **rollout.** Chain predict over a plan of action codes, for a
-  sampling planner.
+- **rollout.** WorldModel chains predict over a plan of action codes.
+  VectorModel.rollout takes raw actions.
 - **Nested codes.** Faces nest by address prefix, so the first half of
   a code is the code one k lower; last_cube gives the whole episode.
 - **Weights and gradient as NumPy.** Settable weights and a readable
   gradient on both classes, for hosts that train replicas.
 - **Save and load.** The same binary files the C++ classes write and
-  read, and pickle for convenience. Optimizer state is not stored.
+  read (`HWM1`, Decoder, `HVM1`), and pickle for WorldModel / Decoder.
+  Optimizer state is not stored. VectorModel.save is that C++ file,
+  not pickle.
 - **NumPy float32.** Arrays converted for you; prefer contiguous
   float32.
 
@@ -441,7 +451,7 @@ pip.
 | Script | What it is for |
 |--------|----------------|
 | [plane_point.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plane_point.py) | The quick start with a held-out score against the identity guess, a Decoder, and a save and load round trip |
-| [plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py) | Planner adapter: CEM passes raw actions to rollout, action_space.low / .high; state vectors, not pixels |
+| [plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py) | VectorModel driving CEM to a goal: raw-action rollout, action_space.low / .high; state vectors, not pixels |
 
 ```bash
 # from a clone of HypercubeWorldModel, after: pip install hypercube-worldmodel
@@ -494,7 +504,7 @@ trip against the C++ file format.
 | [Project README](https://github.com/dliptak001/HypercubeWorldModel#readme) | Product story and the C++ SDK from the repo root |
 | [docs/encoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/encoder.md) | The frozen encoder episode and its knobs |
 | [docs/predictor.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/predictor.md) | The Predictor and its training cycle |
-| [docs/world_model.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model.md) | The WorldModel class, the action path, persistence |
+| [docs/world_model.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model.md) | The WorldModel class, the action path, persistence. VectorModel sits beside it |
 | [docs/decoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/decoder.md) | The Decoder class and its file format |
 | [python/examples/README.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/README.md) | The Python demo scripts |
 

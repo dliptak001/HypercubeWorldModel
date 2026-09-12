@@ -258,3 +258,8 @@ Same-song scoring without a motor is [jepa_predictor_test.md](jepa_predictor_tes
 (Predictor on the k-face directly). Many two-sine draws (train a mix,
 score held, constant dummy E(a)) is [world_model_test.md](world_model_test.md).
 The number is test mse/power, not the word ok.
+
+VectorModel is a third library beside this class: optional
+Normalisers, PaintStripes, encode from short vectors, raw-action
+rollout, named Heads. A host that already has a field stays on
+WorldModel. Do not add Encode(obs) here. See [CPP_SDK.md](CPP_SDK.md).

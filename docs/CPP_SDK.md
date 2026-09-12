@@ -402,7 +402,7 @@ vm->SetActDim(act_dim);
 Head h(Head::Kind::Quadratic, 1e-3f, Head::Sign::Cost);  // linear allowed
 h.Fit(z, code, y, count);                               // za omitted is the default
 h.Apply(z, dst);
-Head::Score s = h.ScoreOn(z, y);                        // R²; AUC only if y is 0/1
+Head::Score s = h.ScoreOn(z, y);                        // R²; AUC only if y is strictly 0/1 both classes
 h.PlanCost(zs, batch, h1, out);                         // sum excluding z0, signed
 vm->SetHead("dist2", h);
 ```
@@ -507,7 +507,10 @@ Typical mistakes:
 | Create throws on an encoder float knob | spectral_radius, leak_rate, and input_scaling must be finite; output_scale must be finite and > 0; a NaN from a corrupt file or an unset field lands here |
 | Throw on Encode | The field must be FieldSize() long and dst CodeSize() long |
 | Throw on EncodeAction | Both the picture and dst must be CodeSize() long; the action cube is k, not dim |
-| Throw on Rollout | actions must be a whole number of codes, and out one code longer than that |
+| Throw on Rollout | WorldModel: actions must be a whole number of codes, and out one code longer than that. VectorModel: actions are H × act_dim; last-dim must match act_dim once that is set; the error names both numbers |
+| SetHead throws | The Head must be fitted |
+| Head::ScoreOn has no AUC | AUC is only computed when y is strictly 0/1 with both classes present; ties count 0.5 |
+| VectorModel::Load | A bare `HWM1` constructs a wm-only VectorModel. WorldModel::Load of an `HVM1` file throws bad magic |
 | Throw on PaintStripes | The source must be non-empty and no longer than the destination |
 | Loss looks huge | It is 0.5 × **sum** of squared error over the code, not a mean |
 | Loss never falls | Check the cycle order, and that BeginBatch runs per batch, not per epoch |

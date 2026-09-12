@@ -67,6 +67,10 @@ A fourth class, the **Decoder**, is a meter. It learns to rebuild the
 field from its k-face so you can see what the compression threw
 away. It never sits in the prediction loop.
 
+**VectorModel** sits beside WorldModel for short-vector hosts:
+optional Normalisers, PaintStripes, raw-action rollout, named Heads.
+A host that already has a field stays on WorldModel.
+
 This is a JEPA-shaped world model with frozen encoders: predict the
 next code, not the next samples.
 
@@ -187,6 +191,8 @@ episode goes something like this.
     GOTO LOOP
 
     After T passes, the reservoir's live output is the cube.
+    RunEpisode returns that cube times output_scale (default 1);
+    the delay line stays raw.
 
 Every episode starts from the same frozen initial condition, so the
 cube depends on the field and nothing else. Both the view and the
@@ -228,8 +234,9 @@ constant picture.
 
 The Predictor's cube has dimension k+1: twice the k-face. The extra
 address bit splits it in half. The first half carries E(x). The
-second half carries E(a), scaled by one constant so the two codes
-reach the net at a chosen ratio. Vertex i of the view sits one hop
+second half carries E(a). Pack concatenates; it does not scale.
+Each encoder has its own output_scale, a presentation gain on the
+cube it returns, default 1. Vertex i of the view sits one hop
 from vertex i of the action, so the net's first depth already sees
 both.
 

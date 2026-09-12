@@ -14,7 +14,7 @@
 | code, E(x), E(a) | Length-2ᵏ arrays. E(x) is the view code; E(a) is the action code. |
 | field | N values, one per view-cube vertex. What encode reads. |
 | paint_stripes | Lay a short vector onto a field as contiguous stripes. |
-| code_size, latent_dim | 2ᵏ. A planner adapter may expose this as latent_dim. |
+| code_size, latent_dim | 2ᵏ. VectorModel exposes this as latent_dim. |
 | passes | Episode length T. 0 means a full tour of that encoder's cube. |
 | z_max | Predictor depth. 0 means k+1. |
 | output_scale | Encoder presentation gain at Create. Default 1. View and action can be set independently after. |
@@ -66,6 +66,7 @@ WorldModel.h.
 - [What a step is](#what-a-step-is)
 - [API reference](#api-reference)
 - [The Decoder](#the-decoder)
+- [VectorModel](#vectormodel)
 - [Shapes](#shapes)
 - [Driving the model from a planner](#driving-the-model-from-a-planner)
 - [Error handling](#error-handling)
@@ -311,9 +312,12 @@ shape. The loop over rows runs in C++ with the GIL released.
 | Method | Role |
 |--------|------|
 | encode(fields) | View codes. (N,) or (count, N) in; (code_size,) or (count, code_size) out. |
-| last_cube() | Scaled full view episode behind the most recent encode. |
-| last_raw_cube() | Unscaled full view episode behind the most recent encode. |
+| last_cube() | Scaled full view episode behind the most recent encode. Same pointer Encode returns after output_scale. |
+| last_raw_cube() | Unscaled full view episode behind the most recent encode. Presentation does not enter this. |
 | last_packed() | Packed E(x) then E(a) from the most recent predict or accumulate. |
+| set_view_output_scale(scale) / set_action_output_scale(scale) | Presentation gain on that encoder's returned cube. Finite, > 0. |
+| suggest_view_output_scale(z, target_rms=1) / suggest_action_output_scale(za, …) | target_rms / rms of already-run raw codes. Does not mutate. |
+| fit_view_output_scale(z, …) / fit_action_output_scale(za, …) | Sets that encoder's output_scale to the suggestion. |
 | encode_action(pictures) | Action codes. (code_size,) or (count, code_size) in and out. A full episode on the action cube per row, not a lookup. |
 | predict(z, za) | Predicted next view codes. Matching rows, or one za broadcast against many z. |
 | rollout(z0, actions) | Chain predict over a plan of action codes: (H, code_size) or (count, H, code_size) in; (H + 1, code_size) or (count, H + 1, code_size) out, row 0 being z0. |
@@ -407,6 +411,53 @@ again = hw.Decoder.load("model.dec")
 What the knobs do, and how the reconstruction error behaves as k moves,
 is in [decoder.md](decoder.md) and [compression_test.md](compression_test.md).
 
+## VectorModel
+
+Authoritative contracts live in the C++ headers; this is the host-oriented
+map. A host that already has a field uses WorldModel and skips this class.
+VectorModel always paints with paint_stripes. CEM is not in the package.
+
+```python
+n = hw.Normaliser.fit(x, clip=3.0)          # x: (count, d) -> values in [-1, 1]
+h = hw.Head(kind="quadratic", ridge=1e-3, sign="cost")  # linear allowed
+h.fit(z, y)                                 # za omitted is the default
+s = h.score(z, y)                           # dict: r2; auc only if y is strictly 0/1
+# h.plan_cost()(zs)                         # (B,) sum excluding z0, signed
+
+vm = hw.VectorModel(wm, obs_norm=n, action_low=lo, action_high=hi,
+                    heads={"dist2": h})
+vm.set_obs_dim(obs_dim)
+vm.set_act_dim(act_dim)
+z = vm.encode(obs)                          # optional norm, paint onto N, wm.encode
+za = vm.encode_action(a)
+path = vm.rollout(z0, actions)              # raw (H, act_dim) or (B, H, act_dim)
+c = vm.cost(zs, goal_z)                     # attached Head, or L2 of last code to goal
+vm.set_head("dist2", h)                     # rejects an unfitted Head
+vm.save("model.hvm")
+again = hw.VectorModel.load("model.hvm")    # HVM1; a bare HWM1 loads as wm-only
+
+hw.min_dim(obs_dim)                         # max(6, ceil(log2(obs_dim))); floor, not a config
+hw.min_k(act_dim)                           # max(5, ceil(log2(act_dim)))
+```
+
+obs_norm, act_norm, and heads are **copies**. Mutating a copy does not
+change the VectorModel; call set_head (or reconstruct) to put a fitted
+object back. last-dim of rollout actions must match act_dim once that
+is set; the error names both numbers.
+
+Health metrics are functions, not methods. RankMe (SVD) stays out of
+this package.
+
+```python
+hw.no_change_mse(z, zn)
+hw.one_step_ratio(mse, z, zn)
+hw.action_sensitivity(z, predict, encode_action, act_dim, mse, rng)
+hw.lin_r2(z, y, z_val, y_val)
+hw.rollout_error(vm, obs_ep, act_ep, H, windows, rng)
+```
+
+Worked program: [python/examples/plan_toy.py](../python/examples/plan_toy.py).
+
 ## Shapes
 
 | Array | Shape | Notes |
@@ -417,6 +468,8 @@ is in [decoder.md](decoder.md) and [compression_test.md](compression_test.md).
 | a plan | (H, code_size) or (count, H, code_size) | action codes for rollout |
 | a rollout | (H + 1, code_size) or (count, H + 1, code_size) | row 0 is the start code |
 | a short vector | (d,) or (count, d) | what paint_stripes takes, d ≤ the target size |
+| a raw obs / action | (obs_dim,) / (act_dim,) or batched | VectorModel.encode / encode_action; not a field |
+| a raw plan | (H, act_dim) or (count, H, act_dim) | VectorModel.rollout; last-dim must match act_dim once set |
 
 Every array is converted to contiguous float32 on the way in; prefer
 handing over float32 to avoid the copy. Returned arrays are float32
@@ -426,15 +479,11 @@ copies that you own.
 
 A sampling planner needs a small surface from a model: encode a view,
 encode an action, step a code, roll a code out over a plan, and score
-the result. The package gives the first four and leaves the fifth to
-the caller, because scoring depends on the task and not on the model.
-
-A sampling planner maps onto the package through **VectorModel**.
+the result. **VectorModel** is that surface for short-vector hosts.
 WorldModel.rollout takes action **codes**. VectorModel.rollout
 takes **raw** actions (B, H, act_dim), paints and encode_action's
-that block once, then calls WorldModel.rollout. CEM is then
-copy-paste: it samples in action space and passes those arrays to
-rollout.
+that block once, then calls WorldModel.rollout. Scoring is a named
+Head, or L2 to a goal code. CEM is a host choice, not package API.
 
 This path is **state-based**. Concatenate a host observation into a
 vector, paint_stripes onto N, encode. A 64×64 RGB frame is
@@ -475,7 +524,9 @@ Typical mistakes:
 | ValueError on a float knob | spectral_radius, leak_rate, input_scaling, output_scale, lr, and eps must be finite; a NaN is rejected even under fast-math |
 | ValueError on encode | The field must be N long; a state vector goes through paint_stripes first |
 | ValueError on encode_action | The picture must be code_size long, not N; the action cube is k, not dim |
-| ValueError on rollout | WorldModel: actions must be (H, code_size) for one start code, (count, H, code_size) for many, with count matching z0. VectorModel: raw (H, act_dim) or (count, H, act_dim); last-dim must match act_dim once that is set |
+| ValueError on rollout | WorldModel: actions must be (H, code_size) for one start code, (count, H, code_size) for many, with count matching z0. VectorModel: raw (H, act_dim) or (count, H, act_dim); last-dim must match act_dim once that is set; the error names both numbers |
+| ValueError on VectorModel.set_head | The Head must be fitted |
+| Head.score has no auc | AUC is only computed when y is strictly 0/1 with both classes present; ties count 0.5 |
 | Loss looks huge | accumulate returns 0.5 × the **sum** of squared error over the code, summed over the rows |
 | Loss never falls | Check the cycle order, and that begin_batch runs per batch, not per epoch |
 | Two actions give the same prediction | The Predictor may be ignoring E(a); raise the action encoder's output_scale, and check that one view code with different action codes gives different predictions |
@@ -506,8 +557,11 @@ succeeds as wm-only.
 
 pickle captures the constructor keywords as given, passes at 0
 included, and the weight array, so an unpickled model rebuilds the
-same way. The pickle version is bumped when the layout changes; newer
-libraries reject unknown future versions with an upgrade message.
+same way. A 1.0.0 pickle that stored `action_scale` maps it onto
+`set_action_output_scale` when `action_output_scale` is absent,
+matching HWM1 v1 Load. The pickle version is bumped when the layout
+changes; newer libraries reject unknown future versions with an
+upgrade message.
 
 The raw weight array is also yours through the weights property, so
 any external format works without either.
@@ -536,6 +590,8 @@ and a version and carry no code.
   threads.
 - fit drops a short tail each epoch so every Adam step sees exactly
   batch_size samples, unless the whole set is smaller than one batch.
+- RankMe (full SVD) is not in this package. Hosts that want it compute
+  it themselves.
 - Native contracts and the C++ surface: **[CPP_SDK.md](CPP_SDK.md)**.
 
 ## Dependencies
