@@ -267,9 +267,15 @@ class WorldModel:
         """View codes for one field ``(N,)`` or many ``(count, N)``.
 
         Returns float32 ``(code_size,)`` or ``(count, code_size)``. Codes
-        depend only on the field: the encoder is frozen.
+        depend only on the field: the encoder is frozen. A short state
+        vector needs :func:`paint_stripes` first, or :class:`VectorModel`.
         """
-        a, one = _rows(fields, self.N, "fields")
+        try:
+            a, one = _rows(fields, self.N, "fields")
+        except ValueError as e:
+            raise ValueError(
+                f"{e}. Short state vectors: paint_stripes(obs, N) or VectorModel.encode"
+            ) from e
         out = self._core.encode(a)
         return out[0] if one else out
 
@@ -292,7 +298,13 @@ class WorldModel:
         This is a full episode on the action cube, not a lookup. Encode
         each distinct action once and reuse the code.
         """
-        a, one = _rows(pictures, self.code_size, "pictures")
+        try:
+            a, one = _rows(pictures, self.code_size, "pictures")
+        except ValueError as e:
+            raise ValueError(
+                f"{e}. Short actions: paint_stripes(act, code_size) or "
+                "VectorModel.encode_action"
+            ) from e
         out = self._core.encode_action(a)
         return out[0] if one else out
 
@@ -1045,7 +1057,8 @@ class Head:
     def code_size(self) -> int:
         return int(self._core.code_size)
 
-    def fit(self, z, y, za=None, epochs: int = 40, batch: int = 32) -> "Head":
+    def fit(self, z, y, za=None, *, epochs: int = 40, batch_size: int = 32) -> "Head":
+        """Fit on codes ``z`` against scalar ``y``. ``za`` omitted is the default."""
         z = _f32(z)
         if z.ndim == 1:
             z = z.reshape(1, -1)
@@ -1053,7 +1066,7 @@ class Head:
         za_a = None if za is None else _f32(za)
         if za_a is not None and za_a.ndim == 1:
             za_a = za_a.reshape(1, -1)
-        self._core.fit(z, y, za_a, int(epochs), int(batch))
+        self._core.fit(z, y, za_a, int(epochs), int(batch_size))
         return self
 
     def predict(self, z, za=None):
@@ -1132,27 +1145,39 @@ class VectorModel:
 
     Always paints with paint_stripes. encode / encode_action take raw vectors.
     rollout takes raw actions. fit trains the underlying WorldModel.
-    Named Heads and optional action bounds live here. obs_norm, act_norm,
-    and heads are copies; set_head / the C++ setters put a fitted object back.
+    Pass an existing WorldModel, or construct one here with dim, k, and
+    the same keywords as WorldModel. Named Heads and optional action
+    bounds live here. obs_norm, act_norm, and heads are copies; set_head
+    to put a fitted Head back.
     """
 
-    def __init__(self, wm, obs_norm=None, act_norm=None,
-                 action_low=None, action_high=None, heads=None, cost=None):
-        if not isinstance(wm, WorldModel):
+    def __init__(self, wm=None, *, obs_norm=None, act_norm=None,
+                 action_low=None, action_high=None, heads=None, cost=None,
+                 **wm_kwargs):
+        if wm is None:
+            if "dim" not in wm_kwargs or "k" not in wm_kwargs:
+                raise TypeError("VectorModel needs a WorldModel, or dim and k")
+            wm = WorldModel(**wm_kwargs)
+        elif wm_kwargs:
+            raise TypeError(
+                "VectorModel: pass a WorldModel or WorldModel keywords, not both"
+            )
+        elif not isinstance(wm, WorldModel):
             raise TypeError("VectorModel needs a WorldModel")
         self._wm = wm
         self._core = _VectorModel(wm._core)
         self._cost = cost
         if obs_norm is not None:
-            self._core.set_obs_norm(obs_norm._core)
+            self.set_obs_norm(obs_norm)
         if act_norm is not None:
-            self._core.set_act_norm(act_norm._core)
-        if action_low is not None and action_high is not None:
-            self._core.set_action_bounds(_f32(np.ravel(action_low)),
-                                         _f32(np.ravel(action_high)))
+            self.set_act_norm(act_norm)
+        if (action_low is None) != (action_high is None):
+            raise ValueError("action_low and action_high must be passed together")
+        if action_low is not None:
+            self.set_action_bounds(action_low, action_high)
         if heads:
             for name, h in dict(heads).items():
-                self._core.set_head(str(name), h._core)
+                self.set_head(str(name), h)
 
     @classmethod
     def _wrap(cls, core) -> "VectorModel":
@@ -1266,9 +1291,23 @@ class VectorModel:
         out = self._core.rollout(zz, aa)
         return out[0] if one else out
 
-    def fit(self, z, za, z_next, **kwargs) -> "VectorModel":
+    def fit(
+        self,
+        z,
+        za,
+        z_next,
+        *,
+        epochs: int,
+        batch_size: int = 32,
+        val=None,
+        shuffle_seed: int = 1,
+        verbose: bool = False,
+    ) -> "VectorModel":
         """Train the Predictor. Same arguments as :meth:`WorldModel.fit`."""
-        self._wm.fit(z, za, z_next, **kwargs)
+        self._wm.fit(
+            z, za, z_next, epochs=epochs, batch_size=batch_size, val=val,
+            shuffle_seed=shuffle_seed, verbose=verbose,
+        )
         return self
 
     def evaluate(self, z, za, z_next) -> float:
@@ -1306,6 +1345,21 @@ class VectorModel:
 
     def set_head(self, name: str, head: Head) -> None:
         self._core.set_head(str(name), head._core)
+
+    def set_obs_norm(self, norm: Normaliser) -> None:
+        self._core.set_obs_norm(norm._core)
+
+    def set_act_norm(self, norm: Normaliser) -> None:
+        self._core.set_act_norm(norm._core)
+
+    def clear_obs_norm(self) -> None:
+        self._core.clear_obs_norm()
+
+    def clear_act_norm(self) -> None:
+        self._core.clear_act_norm()
+
+    def set_action_bounds(self, low, high) -> None:
+        self._core.set_action_bounds(_f32(np.ravel(low)), _f32(np.ravel(high)))
 
     def set_obs_dim(self, d: int) -> None:
         self._core.set_obs_dim(int(d))

@@ -42,15 +42,15 @@ class PlaneWorld:
 
 # ── The model, trained on random transitions ──
 
-wm = hw.WorldModel(dim=DIM, k=K, passes=2 * DIM, leak_rate=0.25, input_scaling=0.8,
-                   z_max=3 * K, gather_span=5, tanh_last=True,
-                   lr=0.03, lr_min_frac=0.05, restore_best=True)
-
 obs = rng.uniform(-1, 1, (512, 2)).astype(np.float32)
 act = rng.uniform(-1, 1, (512, 2)).astype(np.float32)
 nxt = np.clip(obs + STEP * act, -1, 1).astype(np.float32)
-model = hw.VectorModel(wm, action_low=PlaneWorld.action_low,
-                       action_high=PlaneWorld.action_high)
+model = hw.VectorModel(
+    dim=DIM, k=K, passes=2 * DIM, leak_rate=0.25, input_scaling=0.8,
+    z_max=3 * K, gather_span=5, tanh_last=True,
+    lr=0.03, lr_min_frac=0.05,
+    action_low=PlaneWorld.action_low, action_high=PlaneWorld.action_high,
+)
 z = model.encode(obs)
 za = model.encode_action(act)
 zn = model.encode(nxt)

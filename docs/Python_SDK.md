@@ -420,11 +420,13 @@ VectorModel always paints with paint_stripes. CEM is not in the package.
 ```python
 n = hw.Normaliser.fit(x, clip=3.0)          # x: (count, d) -> values in [-1, 1]
 h = hw.Head(sign="cost")                    # LCN on the code cube
-h.fit(z, y)                                 # za omitted is the default
+h.fit(z, y, epochs=40, batch_size=32)       # za omitted is the default
 yhat = h.predict(z)                         # one scalar per code; h(z) is the same
 s = h.score(z, y)                           # dict: r2; auc only if y is strictly 0/1
 c = h.plan_cost(zs)                         # (B,) sum excluding z0, signed
 
+vm = hw.VectorModel(dim=6, k=5, leak_rate=0.25, action_low=lo, action_high=hi)
+# or wrap an existing WorldModel
 vm = hw.VectorModel(wm, obs_norm=n, action_low=lo, action_high=hi,
                     heads={"dist2": h})
 vm.set_obs_dim(obs_dim)

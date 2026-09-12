@@ -396,9 +396,10 @@ with batch size, the same convention as the C++ SDK.
 A sampling planner needs five calls from a model: encode a view,
 encode an action, step a code, roll a code out over a plan, and score
 the result. **VectorModel** is that surface for short-vector hosts:
-encode / encode_action take raw vectors, rollout takes raw actions,
-and cost is a fitted Head or L2 to a goal code. CEM is a host
-choice, not package API.
+`VectorModel(dim=, k=, ...)` builds the WorldModel, or wrap one you
+already have. encode / encode_action take raw vectors, rollout takes
+raw actions, fit trains, and cost is a fitted Head or L2 to a goal
+code. CEM is a host choice, not package API.
 [python/examples/plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py)
 is VectorModel with CEM: it samples raw actions, reads
 action_space.low / .high, and passes those arrays to rollout.

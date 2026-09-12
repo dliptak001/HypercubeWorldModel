@@ -147,6 +147,9 @@ def test_encode_shapes_and_determinism():
     many = wm1.encode(np.stack([field, -field]))
     assert many.shape == (2, wm1.code_size)
     np.testing.assert_array_equal(many[0], z1)
+    with pytest.raises(ValueError) as e:
+        wm1.encode(np.zeros(2, np.float32))
+    assert "paint_stripes" in str(e.value) and "VectorModel.encode" in str(e.value)
 
 
 def test_encode_is_first_face_of_last_cube():
@@ -488,7 +491,7 @@ def test_head_toy_readout():
     rng = np.random.default_rng(1)
     z = rng.uniform(-1, 1, (80, 16)).astype(np.float32)
     y = z[:, 0].copy()
-    h = hw.Head(sign="cost").fit(z, y, epochs=40, batch=16)
+    h = hw.Head(sign="cost").fit(z, y, epochs=40, batch_size=16)
     assert h.score(z, y)["r2"] > 0.7
     np.testing.assert_array_equal(h.predict(z), h(z))
     with pytest.raises(ValueError):
@@ -500,31 +503,31 @@ def test_head_za_optional_and_plan_cost():
     z = rng.standard_normal((16, 16)).astype(np.float32)
     za = rng.standard_normal((16, 16)).astype(np.float32)
     y = z[:, 0] + 0.1 * za[:, 0]
-    h = hw.Head().fit(z, y, za, epochs=30, batch=8)
+    h = hw.Head().fit(z, y, za, epochs=30, batch_size=8)
     p = h(z, za)
     assert p.shape == (16,)
     with pytest.raises(ValueError):
         h(z)
-    h2 = hw.Head(sign="reward").fit(z, z[:, 0], epochs=20, batch=8)
+    h2 = hw.Head(sign="reward").fit(z, z[:, 0], epochs=20, batch_size=8)
     zs = rng.standard_normal((3, 5, 16)).astype(np.float32)
     c = h2.plan_cost(zs)
     assert c.shape == (3,)
-    h3 = hw.Head(sign="cost").fit(z, z[:, 0], epochs=20, batch=8)
+    h3 = hw.Head(sign="cost").fit(z, z[:, 0], epochs=20, batch_size=8)
     assert np.allclose(h3.plan_cost(zs), -c, atol=1e-5)
 
 
 def test_head_auc_binary_and_ties():
     z = np.ones((8, 16), np.float32)
     y = np.array([0, 0, 0, 0, 1, 1, 1, 1], np.float32)
-    h = hw.Head().fit(z, y, epochs=8, batch=8)
+    h = hw.Head().fit(z, y, epochs=8, batch_size=8)
     s = h.score(z, y)
     assert "auc" in s
     assert abs(s["auc"] - 0.5) < 1e-5
     z2 = np.zeros((8, 16), np.float32)
     z2[:, 0] = [0, 0, 0, 0, 1, 1, 1, 1]
-    h2 = hw.Head().fit(z2, y, epochs=40, batch=8)
+    h2 = hw.Head().fit(z2, y, epochs=40, batch_size=8)
     assert h2.score(z2, y)["auc"] > 0.9
-    cont = hw.Head(sign="reward").fit(z2, z2[:, 0] + 0.3, epochs=20, batch=8)
+    cont = hw.Head(sign="reward").fit(z2, z2[:, 0] + 0.3, epochs=20, batch_size=8)
     assert "auc" not in cont.score(z2, z2[:, 0] + 0.3)
 
 
@@ -554,6 +557,19 @@ def test_vector_model_encode_rollout_and_capacity():
         hw.VectorModel(wm).encode_action(np.zeros(wm.code_size + 1, np.float32))
     msg = str(e.value)
     assert str(wm.code_size + 1) in msg and str(wm.code_size) in msg
+    with pytest.raises(ValueError):
+        hw.VectorModel(wm, action_low=[-1, -1])
+    with pytest.raises(TypeError):
+        hw.VectorModel(wm, dim=DIM)
+    vm2 = hw.VectorModel(dim=DIM, k=K, passes=12, leak_rate=0.25, input_scaling=0.8,
+                         action_low=[-1, -1], action_high=[1, 1])
+    z2 = vm2.encode(obs[0])
+    assert z2.shape == (wm.code_size,)
+    n = hw.Normaliser.fit(obs)
+    vm2.set_obs_norm(n)
+    assert vm2.obs_norm is not None
+    vm2.clear_obs_norm()
+    assert vm2.obs_norm is None
 
 
 def test_vector_model_save_load_and_hwm1(tmp_path):
@@ -563,7 +579,7 @@ def test_vector_model_save_load_and_hwm1(tmp_path):
     vm = hw.VectorModel(wm, obs_norm=norm, action_low=[-1, -1], action_high=[1, 1])
     z = vm.encode(obs)
     y = (obs ** 2).sum(1)
-    head = hw.Head().fit(z, y, epochs=20, batch=8)
+    head = hw.Head().fit(z, y, epochs=20, batch_size=8)
     vm.set_head("dist2", head)
     vm.set_meta("domain", "toy")
     path = tmp_path / "model.hvm"
