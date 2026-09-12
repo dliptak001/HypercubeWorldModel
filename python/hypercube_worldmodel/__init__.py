@@ -29,12 +29,25 @@ import pickle
 import numpy as np
 
 from ._core import _Decoder, _WorldModel, cpp_version
+from ._core import _Head, _Normaliser, _VectorModel
 from ._core import paint_stripes as _paint_stripes
 from ._core import mean_abs as _mean_abs
 from ._core import rms as _rms
+from ._core import min_dim as _min_dim
+from ._core import min_k as _min_k
+from ._core import no_change_mse as _no_change_mse
+from ._core import one_step_ratio as _one_step_ratio
+from ._core import action_sensitivity_from_preds as _action_sensitivity_from_preds
+from ._core import lin_r2 as _lin_r2
+from ._core import rollout_error_from_codes as _rollout_error_from_codes
 from ._version import __version__
 
-__all__ = ["WorldModel", "Decoder", "paint_stripes", "mean_abs", "rms", "__version__"]
+__all__ = [
+    "WorldModel", "Decoder", "Normaliser", "Head", "VectorModel", "ActionSpace",
+    "paint_stripes", "mean_abs", "rms", "min_dim", "min_k",
+    "no_change_mse", "one_step_ratio", "action_sensitivity", "lin_r2",
+    "rollout_error", "__version__",
+]
 
 if cpp_version != __version__:  # pragma: no cover
     raise ImportError(
@@ -874,3 +887,390 @@ class Decoder:
         self.__init__(**dict(state["ctor"]))
         self._core.set_input_scale(float(state["input_scale"]))
         self._core.load_weights(_f32(state["weights"]))
+
+
+def min_dim(obs_dim: int) -> int:
+    """Floor view-cube dim for a vector of this length. Not a config."""
+    return int(_min_dim(int(obs_dim)))
+
+
+def min_k(act_dim: int) -> int:
+    """Floor action-cube dim for a vector of this length. Not a config."""
+    return int(_min_k(int(act_dim)))
+
+
+def no_change_mse(z, zn) -> float:
+    """MSE of predicting z_{t+1} = z_t."""
+    return float(_no_change_mse(_f32(z), _f32(zn)))
+
+
+def one_step_ratio(mse, z, zn) -> float:
+    """mse / no-change MSE. Lower is better."""
+    return float(_one_step_ratio(float(mse), _f32(z), _f32(zn)))
+
+
+def action_sensitivity(z, predict, encode_action, act_dim, mse, rng, n=4000):
+    """Same z, two random actions in [-1, 1]. Returns div, mse, act (div/mse)."""
+    n = min(int(n), len(z))
+    zb = z[:n]
+    za1 = encode_action(rng.uniform(-1, 1, (n, act_dim)).astype(np.float32))
+    za2 = encode_action(rng.uniform(-1, 1, (n, act_dim)).astype(np.float32))
+    return _action_sensitivity_from_preds(_f32(predict(zb, za1)), _f32(predict(zb, za2)),
+                                          float(mse))
+
+
+def lin_r2(z, y, z_val, y_val, ridge=1e-4):
+    """Per-dimension val R² of linear ridge from z to y. Returns min, mean, r2."""
+    y = np.asarray(y, np.float32)
+    yv = np.asarray(y_val, np.float32)
+    if y.ndim == 1:
+        y = y[:, None]
+        yv = yv[:, None]
+    return _lin_r2(_f32(z), _f32(y), _f32(z_val), _f32(yv), float(ridge))
+
+
+def rollout_error(model, obs_ep, act_ep, H: int, windows: int, rng):
+    """obs_ep (E, T+1, obs_dim), act_ep (E, T, act_dim). Returns dict of (H,) arrays."""
+    E, T = act_ep.shape[:2]
+    e_idx = rng.integers(0, E, windows)
+    t_idx = rng.integers(0, T - H + 1, windows)
+    a = act_ep[e_idx[:, None], t_idx[:, None] + np.arange(H)]
+    o = obs_ep[e_idx[:, None], t_idx[:, None] + np.arange(H + 1)]
+    W = windows
+    z_true = model.encode(o.reshape(W * (H + 1), -1)).reshape(W, H + 1, -1)
+    z_pred = model.rollout(z_true[:, 0], a)
+    return _rollout_error_from_codes(_f32(z_pred), _f32(z_true))
+
+
+class ActionSpace:
+    """Bounds only. A planner reads .low and .high; not a gymnasium Box."""
+
+    def __init__(self, low, high):
+        self.low = np.asarray(low, dtype=np.float32)
+        self.high = np.asarray(high, dtype=np.float32)
+
+
+class Normaliser:
+    """(x - mean) / std, clipped to [-clip, clip], then scaled to [-1, 1]."""
+
+    def __init__(self, mean, std, clip: float = 3.0):
+        self._core = _Normaliser.from_state(_f32(np.ravel(mean)), _f32(np.ravel(std)),
+                                            float(clip))
+
+    @classmethod
+    def fit(cls, x, clip: float = 3.0) -> "Normaliser":
+        x = _f32(x)
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+        if x.ndim != 2:
+            raise ValueError(f"Normaliser.fit x must be 1-D or 2-D, got {x.ndim}-D")
+        obj = cls.__new__(cls)
+        obj._core = _Normaliser.fit(x, float(clip))
+        return obj
+
+    @classmethod
+    def _wrap(cls, core) -> "Normaliser":
+        obj = cls.__new__(cls)
+        obj._core = core
+        return obj
+
+    def __call__(self, x):
+        x = _f32(x)
+        one = x.ndim == 1
+        if one:
+            x = x.reshape(1, -1)
+        if x.ndim != 2:
+            raise ValueError(f"Normaliser x must be 1-D or 2-D, got {x.ndim}-D")
+        out = self._core.apply(x)
+        return out[0] if one else out
+
+    @property
+    def mean(self):
+        return self._core.mean()
+
+    @property
+    def std(self):
+        return self._core.std()
+
+    @property
+    def clip(self) -> float:
+        return float(self._core.clip)
+
+    def state(self):
+        return {"mean": self.mean, "std": self.std, "clip": self.clip}
+
+    @classmethod
+    def from_state(cls, d) -> "Normaliser":
+        return cls(d["mean"], d["std"], float(np.asarray(d["clip"])))
+
+
+class Head:
+    """kind is the feature map; sign tells plan_cost whether to negate."""
+
+    def __init__(self, kind: str = "quadratic", ridge: float = 1e-3, sign: str = "cost"):
+        self._core = _Head(str(kind), float(ridge), str(sign))
+
+    @classmethod
+    def _wrap(cls, core) -> "Head":
+        obj = cls.__new__(cls)
+        obj._core = core
+        return obj
+
+    @property
+    def kind(self) -> str:
+        return str(self._core.kind)
+
+    @property
+    def sign(self) -> str:
+        return str(self._core.sign)
+
+    @property
+    def ridge(self) -> float:
+        return float(self._core.ridge)
+
+    @property
+    def uses_za(self) -> bool:
+        return bool(self._core.uses_za)
+
+    @property
+    def w(self):
+        return self._core.w()
+
+    @property
+    def b(self) -> float:
+        return float(self._core.b)
+
+    @property
+    def mu(self):
+        return self._core.mu()
+
+    @property
+    def sd(self):
+        return self._core.sd()
+
+    def fit(self, z, y, za=None) -> "Head":
+        z = _f32(z)
+        if z.ndim == 1:
+            z = z.reshape(1, -1)
+        y = np.asarray(y, dtype=np.float32).reshape(-1)
+        za_a = None if za is None else _f32(za)
+        if za_a is not None and za_a.ndim == 1:
+            za_a = za_a.reshape(1, -1)
+        self._core.fit(z, y, za_a)
+        return self
+
+    def __call__(self, z, za=None):
+        z = _f32(z)
+        one = z.ndim == 1
+        if one:
+            z = z.reshape(1, -1)
+        za_a = None if za is None else _f32(za)
+        if za_a is not None and za_a.ndim == 1:
+            za_a = za_a.reshape(1, -1)
+        out = self._core.apply(z, za_a)
+        return out[0] if one else out
+
+    def score(self, z, y, za=None):
+        z = _f32(z)
+        if z.ndim == 1:
+            z = z.reshape(1, -1)
+        y = np.asarray(y, dtype=np.float32).reshape(-1)
+        za_a = None if za is None else _f32(za)
+        if za_a is not None and za_a.ndim == 1:
+            za_a = za_a.reshape(1, -1)
+        return self._core.score(z, y, za_a)
+
+    def plan_cost(self):
+        def cost(zs, goal_z=None):
+            zs = _f32(zs)
+            if zs.ndim != 3:
+                raise ValueError("plan_cost zs must be (B, H+1, code)")
+            return self._core.plan_cost(zs)
+
+        return cost
+
+    def state(self):
+        return {
+            "w": self.w, "b": self.b, "mu": self.mu, "sd": self.sd,
+            "ridge": self.ridge, "kind": self.kind, "sign": self.sign,
+            "uses_za": np.bool_(self.uses_za),
+        }
+
+    @classmethod
+    def from_state(cls, d) -> "Head":
+        kind = str(np.asarray(d["kind"]).item() if "kind" in d else "quadratic")
+        sign = str(np.asarray(d["sign"]).item() if "sign" in d else "cost")
+        if kind in ("cost", "reward"):
+            sign = kind
+            kind = "quadratic"
+        ridge = float(np.asarray(d["ridge"]))
+        uses_za = bool(np.asarray(d["uses_za"]).item()) if "uses_za" in d else False
+        w = _f32(np.ravel(d["w"]))
+        mu = _f32(np.ravel(d["mu"]))
+        sd = _f32(np.ravel(d["sd"]))
+        code = int(np.asarray(d["code"]).item()) if "code" in d else 0
+        if code == 0:
+            # Infer code from feature count: linear nf=c, quadratic nf=c+c(c+1)/2.
+            nf = int(w.size)
+            if uses_za:
+                if nf % 2:
+                    raise ValueError("Head.from_state: odd feature count with za")
+                nf //= 2
+            if kind == "linear":
+                code = nf
+            else:
+                # c + c(c+1)/2 = nf  =>  c(c+3)/2 = nf  => c^2 + 3c - 2 nf = 0
+                disc = 9 + 8 * nf
+                code = int((-3 + disc ** 0.5) / 2)
+        h = cls._wrap(_Head.from_state(kind, sign, ridge, uses_za, code, w,
+                                       float(np.asarray(d["b"])), mu, sd))
+        return h
+
+
+class VectorModel:
+    """WorldModel plus optional normalisers, PaintStripes, raw-action rollout.
+
+    Always paints with paint_stripes. encode / encode_action take raw vectors.
+    rollout takes raw actions. Named Heads and optional action bounds live here.
+    """
+
+    def __init__(self, wm, obs_norm=None, act_norm=None,
+                 action_low=None, action_high=None, heads=None, cost=None):
+        if not isinstance(wm, WorldModel):
+            raise TypeError("VectorModel needs a WorldModel")
+        self._wm = wm
+        self._core = _VectorModel(wm._core)
+        self._cost = cost
+        if obs_norm is not None:
+            self._core.set_obs_norm(obs_norm._core)
+        if act_norm is not None:
+            self._core.set_act_norm(act_norm._core)
+        if action_low is not None and action_high is not None:
+            self._core.set_action_bounds(_f32(np.ravel(action_low)),
+                                         _f32(np.ravel(action_high)))
+        if heads:
+            for name, h in dict(heads).items():
+                self._core.set_head(str(name), h._core)
+
+    @classmethod
+    def _wrap(cls, core) -> "VectorModel":
+        obj = cls.__new__(cls)
+        obj._core = core
+        obj._wm = WorldModel._wrap(core.world())
+        obj._cost = None
+        return obj
+
+    @property
+    def wm(self) -> WorldModel:
+        return self._wm
+
+    @property
+    def latent_dim(self) -> int:
+        return int(self._wm.code_size)
+
+    @property
+    def obs_norm(self):
+        n = self._core.obs_norm()
+        return None if n is None else Normaliser._wrap(n)
+
+    @property
+    def act_norm(self):
+        n = self._core.act_norm()
+        return None if n is None else Normaliser._wrap(n)
+
+    @property
+    def action_space(self):
+        if not self._core.has_action_bounds():
+            return None
+        return ActionSpace(self._core.action_low(), self._core.action_high())
+
+    @property
+    def heads(self) -> dict:
+        return {name: Head._wrap(self._core.get_head(name))
+                for name in self._core.head_names()}
+
+    @property
+    def obs_dim(self) -> int:
+        return int(self._core.obs_dim)
+
+    @property
+    def act_dim(self) -> int:
+        return int(self._core.act_dim)
+
+    def encode(self, obs):
+        obs = _f32(obs)
+        one = obs.ndim == 1
+        if one:
+            obs = obs.reshape(1, -1)
+        if obs.ndim != 2:
+            raise ValueError(f"obs must be 1-D or 2-D, got {obs.ndim}-D")
+        out = self._core.encode(obs)
+        return out[0] if one else out
+
+    def encode_action(self, a):
+        a = _f32(a)
+        one = a.ndim == 1
+        if one:
+            a = a.reshape(1, -1)
+        if a.ndim != 2:
+            raise ValueError(f"a must be 1-D or 2-D, got {a.ndim}-D")
+        out = self._core.encode_action(a)
+        return out[0] if one else out
+
+    def predict(self, z, za):
+        zz, one_z = _rows(z, self._wm.code_size, "z")
+        aa, one_a = _rows(za, self._wm.code_size, "za")
+        if one_a and not one_z:
+            aa = np.broadcast_to(aa, zz.shape)
+        elif one_z and not one_a:
+            zz = np.broadcast_to(zz, aa.shape)
+        out = self._core.predict(_f32(zz), _f32(aa))
+        return out[0] if (one_z and one_a) else out
+
+    def rollout(self, z0, actions):
+        c = self._wm.code_size
+        zz, one = _rows(z0, c, "z0")
+        aa = _f32(actions)
+        if aa.ndim == 2:
+            if not one:
+                raise ValueError("actions must be 3-D when z0 has many rows")
+            aa = aa.reshape(1, *aa.shape)
+        elif aa.ndim != 3:
+            raise ValueError(f"actions must be 2-D or 3-D, got {aa.ndim}-D")
+        out = self._core.rollout(zz, aa)
+        return out[0] if one else out
+
+    def cost(self, zs, goal_z=None):
+        if self._cost is not None:
+            return self._cost(zs, goal_z)
+        zs = _f32(zs)
+        if zs.ndim != 3:
+            raise ValueError("cost zs must be (B, H+1, code)")
+        g = None if goal_z is None else _f32(np.ravel(goal_z))
+        return self._core.cost(zs, g)
+
+    def set_head(self, name: str, head: Head) -> None:
+        self._core.set_head(str(name), head._core)
+
+    def set_obs_dim(self, d: int) -> None:
+        self._core.set_obs_dim(int(d))
+
+    def set_act_dim(self, d: int) -> None:
+        self._core.set_act_dim(int(d))
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._core.set_meta(str(key), str(value))
+
+    def meta(self, key: str) -> str:
+        return str(self._core.meta(str(key)))
+
+    def save(self, path) -> None:
+        """Write a VectorModel file the C++ VectorModel::Load also reads."""
+        self._core.save(str(pathlib.Path(path)))
+
+    @classmethod
+    def load(cls, path) -> "VectorModel":
+        """Read a file written by :meth:`save` or by C++ VectorModel::Save.
+        A bare WorldModel HWM1 file loads as wm-only."""
+        return cls._wrap(_VectorModel.load(str(pathlib.Path(path))))
+

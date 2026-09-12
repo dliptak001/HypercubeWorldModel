@@ -283,14 +283,17 @@ The component specifications are [docs/encoder.md](docs/encoder.md),
 
 ## SDKs
 
-**C++** — two classes. WorldModel is the world model: link WorldModel,
-include WorldModel.h. Decoder is reconstruction: link Decoder, include
-Decoder.h. The guide is [docs/CPP_SDK.md](docs/CPP_SDK.md); the worked
-program is [examples/quick_start.cpp](examples/quick_start.cpp).
+**C++** — WorldModel is the world model: link WorldModel, include
+WorldModel.h. Decoder is reconstruction: link Decoder, include
+Decoder.h. VectorModel is the planner surface for short vectors: link
+VectorModel, include VectorModel.h. Leave VectorModel out if you paint
+your own fields. The guide is [docs/CPP_SDK.md](docs/CPP_SDK.md); the
+worked programs are [examples/quick_start.cpp](examples/quick_start.cpp)
+and [examples/vector_start.cpp](examples/vector_start.cpp).
 
 **Python** — pip install hypercube-worldmodel, import
-hypercube_worldmodel. The wheel compiles this C++ core; same two
-classes plus paint_stripes, same files. The guide is
+hypercube_worldmodel. The wheel compiles this C++ core; same classes
+plus paint_stripes, same files. The guide is
 [docs/Python_SDK.md](docs/Python_SDK.md); the package story is
 [python/README.md](python/README.md).
 

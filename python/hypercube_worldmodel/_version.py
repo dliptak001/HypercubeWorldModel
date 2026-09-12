@@ -3,4 +3,4 @@
 # - hypercube_worldmodel.__version__ imports it
 # - bindings.cpp gets the same string at compile time via CMake and
 #   static_asserts it against WorldModel::kVersion in WorldModel.h
-__version__ = "1.0.0"
+__version__ = "1.1.0"

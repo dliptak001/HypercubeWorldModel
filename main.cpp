@@ -8,6 +8,8 @@
 #include "Decoder.h"
 #include "Predictor.h"
 #include "WorldModel.h"
+#include "VectorModel.h"
+#include "Metrics.h"
 
 #include <bit>
 #include <cmath>
@@ -16,6 +18,7 @@
 #include <fstream>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 static int Fail(const char* what)
@@ -416,6 +419,150 @@ int main()
         try { std::vector<float> bad(sub / 2); wm->Encode(fields[0], bad); }
         catch (const std::invalid_argument&) { threw = true; }
         if (!threw) return Fail("WorldModel Encode short dst not rejected");
+    }
+
+    // --- Normaliser / Head / VectorModel -----------------------------------
+    {
+        std::vector<float> x = {0.f, 10.f, 2.f, 12.f, 4.f, 14.f};   // 3 x 2
+        auto norm = Normaliser::Fit(x, 2, 3.f);
+        if (norm.Dim() != 2) return Fail("Normaliser dim");
+        std::vector<float> out(2);
+        norm.Apply(std::span<const float>(x.data(), 2), out);
+        if (!(out[0] >= -1.f && out[0] <= 1.f && out[1] >= -1.f && out[1] <= 1.f))
+            return Fail("Normaliser Apply not in [-1,1]");
+        auto again = Normaliser::FromState(norm.Mean(), norm.Std(), norm.Clip());
+        std::vector<float> out2(2);
+        again.Apply(std::span<const float>(x.data(), 2), out2);
+        if (out[0] != out2[0] || out[1] != out2[1])
+            return Fail("Normaliser FromState mismatch");
+        threw = false;
+        try { Normaliser::Fit(x, 2, std::bit_cast<float>(0x7fc00000u)); }
+        catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) return Fail("Normaliser NaN clip not rejected");
+        std::printf("Normaliser dim=%zu clip=%.3g round-trip OK\n",
+                    again.Dim(), again.Clip());
+    }
+
+    if (MinDim(6) != 6 || MinDim(67) != 7 || MinK(2) != 5 || MinK(38) != 6)
+        return Fail("MinDim/MinK floors");
+    threw = false;
+    try { RequireLastDim(7, 6, "obs", "N"); }
+    catch (const std::invalid_argument& e)
+    {
+        threw = true;
+        const std::string msg = e.what();
+        if (msg.find('7') == std::string::npos || msg.find('6') == std::string::npos)
+            return Fail("capacity error must name both sizes");
+    }
+    if (!threw) return Fail("RequireLastDim 7>6 did not throw");
+
+    {
+        // Quadratic Head on a toy pairwise distance: z = [a, b], y = ||a-b||^2.
+        const size_t code = 4, n = 64;
+        std::vector<float> z(n * code), y(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            const float ax = static_cast<float>(i % 8) / 7.f;
+            const float ay = static_cast<float>(i / 8) / 7.f;
+            const float bx = 1.f - ax, by = 0.5f;
+            z[i * code + 0] = ax;
+            z[i * code + 1] = ay;
+            z[i * code + 2] = bx;
+            z[i * code + 3] = by;
+            const float dx = ax - bx, dy = ay - by;
+            y[i] = dx * dx + dy * dy;
+        }
+        Head qh;
+        qh.Fit(z, code, y, n);
+        const Head::Score qs = qh.ScoreOn(z, y);
+        std::printf("Head quadratic toy-distance R2 %.4f\n", qs.r2);
+        if (!(qs.r2 > 0.99f)) return Fail("Head quadratic R2 not near 1");
+        Head lh(Head::Kind::Linear);
+        lh.Fit(z, code, y, n);
+        if (!lh.Fitted()) return Fail("Head linear did not fit");
+        threw = false;
+        try { std::vector<float> dummy(n); qh.Apply(z, dummy, z); }
+        catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) return Fail("Head za omitted path accepted za");
+    }
+
+    {
+        WorldModelConfig wcfg;
+        wcfg.encoder.dim = 6;
+        wcfg.encoder.history_depth = 4;
+        wcfg.encoder.passes = 8;
+        wcfg.k = 5;
+        auto vm = VectorModel::Create(WorldModel::Create(wcfg));
+        const float lo[2] = {-1.f, -1.f}, hi[2] = {1.f, 1.f};
+        vm->SetActionBounds(lo, hi);
+        const size_t c = vm->CodeSize();
+        std::vector<float> obs{0.2f, -0.3f}, act{0.1f, -0.2f};
+        std::vector<float> z(c), za(c);
+        vm->Encode(obs, z);
+        vm->EncodeAction(act, za);
+        const float* hat = vm->Predict(z, za);
+        if (hat == nullptr) return Fail("VectorModel Predict");
+        std::vector<float> path(2 * c);
+        vm->Rollout(z, act, path);   // H=1
+        if (path[0] != z[0]) return Fail("VectorModel Rollout z0");
+
+        Head dist(Head::Kind::Linear);
+        std::vector<float> y{0.1f};
+        dist.Fit(z, c, y, 1);
+        vm->SetHead("dist2", dist);
+        std::vector<float> cost(1);
+        vm->Cost(path, 1, 2, cost);
+
+        const std::filesystem::path vfile =
+            std::filesystem::temp_directory_path() / "hypercube_vector_model_smoke.hvm";
+        vm->Save(vfile);
+        auto vm2 = VectorModel::Load(vfile);
+        std::vector<float> z2(c);
+        vm2->Encode(obs, z2);
+        for (size_t i = 0; i < c; ++i)
+            if (z[i] != z2[i])
+                return Fail("VectorModel Load Encode differs");
+        if (!vm2->GetHead("dist2") || vm2->GetHead("dist2")->Bias() != dist.Bias())
+            return Fail("VectorModel Load Head");
+        if (!vm2->ObsNormaliser() && vm->ObsNormaliser())
+            return Fail("VectorModel Load norm");
+        auto nfit = Normaliser::Fit(obs, 2);
+        vm->SetObsNormaliser(nfit);
+        vm->Save(vfile);
+        vm2 = VectorModel::Load(vfile);
+        if (!vm2->ObsNormaliser() || vm2->ObsNormaliser()->Mean()[0] != nfit.Mean()[0])
+            return Fail("VectorModel Load Normaliser mean");
+
+        threw = false;
+        try { WorldModel::Load(vfile); }
+        catch (const std::runtime_error& e)
+        {
+            threw = true;
+            const std::string msg = e.what();
+            if (msg.find("magic") == std::string::npos)
+                return Fail("WorldModel::Load of VectorModel file should be bad magic");
+        }
+        if (!threw) return Fail("WorldModel::Load of HVM1 did not throw");
+        std::filesystem::remove(vfile);
+
+        const std::filesystem::path wfile =
+            std::filesystem::temp_directory_path() / "hypercube_vector_model_bare.wm";
+        vm->World().Save(wfile);
+        auto wm_only = VectorModel::Load(wfile);   // HWM1 as wm-only
+        if (wm_only->GetHead("dist2") != nullptr)
+            return Fail("VectorModel Load HWM1 should have no heads");
+        WorldModel::Load(wfile);   // still a WorldModel file
+        std::filesystem::remove(wfile);
+
+        const float mse = NoChangeMse(z, za);
+        const float ratio = OneStepRatio(mse, z, za);
+        std::printf("metrics no-change %.5f one-step-ratio %.3f\n", mse, ratio);
+        auto lin = LinearR2On(z, obs, z, obs, 1, 1, c, 2);
+        std::printf("metrics linR2 min %.3f mean %.3f\n", lin.min, lin.mean);
+        auto asens = MeasureActionSensitivity(*vm, z, 1, mse > 0.f ? mse : 1.f, 1, 1);
+        std::printf("metrics act %.3f\n", asens.act);
+        std::printf("VectorModel N=%zu code=%zu round-trip OK\n",
+                    vm->FieldSize(), vm->CodeSize());
     }
 
     std::printf("all OK\n");

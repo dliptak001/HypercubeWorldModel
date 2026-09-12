@@ -7,6 +7,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -186,7 +187,13 @@ void WorldModel::Save(const std::filesystem::path& file) const
     std::ofstream os(file, std::ios::binary);
     if (!os)
         throw std::runtime_error("WorldModel::Save cannot open " + file.string());
+    Save(os);
+    if (!os)
+        throw std::runtime_error("WorldModel::Save write failed for " + file.string());
+}
 
+void WorldModel::Save(std::ostream& os) const
+{
     os.write(kMagic, sizeof(kMagic));
     WriteRaw(os, kFileVersion);
 
@@ -221,9 +228,6 @@ void WorldModel::Save(const std::filesystem::path& file) const
     WriteRaw(os, static_cast<uint64_t>(w.size()));
     os.write(reinterpret_cast<const char*>(w.data()),
              static_cast<std::streamsize>(w.size() * sizeof(float)));
-
-    if (!os)
-        throw std::runtime_error("WorldModel::Save write failed for " + file.string());
 }
 
 std::unique_ptr<WorldModel> WorldModel::Load(const std::filesystem::path& file)
@@ -231,16 +235,21 @@ std::unique_ptr<WorldModel> WorldModel::Load(const std::filesystem::path& file)
     std::ifstream is(file, std::ios::binary);
     if (!is)
         throw std::runtime_error("WorldModel::Load cannot open " + file.string());
+    return Load(is, file.string());
+}
 
+std::unique_ptr<WorldModel> WorldModel::Load(std::istream& is, std::string_view source)
+{
+    const std::string src(source);
     char magic[4];
     is.read(magic, sizeof(magic));
     if (!is || std::memcmp(magic, kMagic, sizeof(kMagic)) != 0)
-        throw std::runtime_error("WorldModel::Load bad magic in " + file.string());
+        throw std::runtime_error("WorldModel::Load bad magic in " + src);
 
     const uint32_t version = ReadRaw<uint32_t>(is, "version");
     if (version != kFileVersion && version != kFileVersionV1)
         throw std::runtime_error("WorldModel::Load unsupported version " +
-                                 std::to_string(version) + " in " + file.string());
+                                 std::to_string(version) + " in " + src);
 
     WorldModelConfig cfg;
     cfg.encoder.dim = static_cast<size_t>(ReadRaw<uint64_t>(is, "encoder.dim"));
@@ -284,13 +293,13 @@ std::unique_ptr<WorldModel> WorldModel::Load(const std::filesystem::path& file)
     wm->SetActionOutputScale(action_output_scale);
     if (n_weights != wm->pred_->Weights().size())
         throw std::runtime_error("WorldModel::Load weight count " + std::to_string(n_weights) +
-                                 " does not match config in " + file.string());
+                                 " does not match config in " + src);
 
     std::vector<float> w(static_cast<size_t>(n_weights));
     is.read(reinterpret_cast<char*>(w.data()),
             static_cast<std::streamsize>(w.size() * sizeof(float)));
     if (!is)
-        throw std::runtime_error("WorldModel::Load truncated reading weights in " + file.string());
+        throw std::runtime_error("WorldModel::Load truncated reading weights in " + src);
 
     wm->pred_->LoadWeights(w);
     return wm;

@@ -14,14 +14,16 @@ dimension k; its whole output is the action code, E(a). A locally
 connected net, the Predictor, learns to map E(x) and E(a) to the next
 E(x). It is the only part of the world model that trains.
 
-Two classes own the product. WorldModel is the world model: the two
+Three classes own the product. WorldModel is the world model: the two
 encoders and the Predictor. Decoder is reconstruction: a second
 locally connected net that takes a code of 2ᵏ values and gives back a
-field of N, trained on its own. A planner needs only the first. A
-task that has to see what a code stands for, or what the cut threw
-away, needs the second. Each lives in one header, WorldModel.h and
-Decoder.h, written in plain C++23 with no dependencies beyond the
-standard library.
+field of N, trained on its own. VectorModel is the planner surface for
+vector hosts: optional Normalisers, PaintStripes, encode from short
+vectors, raw-action rollout, named Heads, and capacity checks. A host
+that already has a field uses WorldModel. A task that has to see what
+a code stands for needs the Decoder. Headers WorldModel.h, Decoder.h,
+and VectorModel.h; plain C++23, no dependencies beyond the standard
+library.
 
 This is a **map API**, not a stream API: one field in, one episode, one
 code out. The model does not remember the last view. State that has to
@@ -29,7 +31,9 @@ persist across steps lives with the caller.
 
 The same product from Python: **[Python_SDK.md](Python_SDK.md)**.  
 The components, one by one: [encoder.md](encoder.md) / [predictor.md](predictor.md) / [world_model.md](world_model.md) / [decoder.md](decoder.md).  
-Worked program: [examples/quick_start.cpp](../examples/quick_start.cpp).
+Worked programs: [examples/quick_start.cpp](../examples/quick_start.cpp)
+(WorldModel) and [examples/vector_start.cpp](../examples/vector_start.cpp)
+(VectorModel).
 
 ## Contents
 
@@ -48,26 +52,29 @@ Worked program: [examples/quick_start.cpp](../examples/quick_start.cpp).
 ## Build and link
 
 Requirements: a **C++23** compiler (GCC 13+, Clang 17+, MSVC 2022+) and
-**CMake 3.21 or later**. The library targets are **WorldModel** and
-**Decoder**, two static libraries. WorldModel carries Encoder, LCN, and
-Predictor with it; Decoder carries LCN. Each exports its own directory
-as a public include directory.
+**CMake 3.21 or later**. The library targets are **WorldModel**,
+**Decoder**, and **VectorModel**. WorldModel carries Encoder, LCN, and
+Predictor with it; Decoder carries LCN; VectorModel carries WorldModel,
+Normaliser, and Head. Each exports its own directory as a public
+include directory.
 
 From your own project:
 
 ```cmake
 add_subdirectory(path/to/HypercubeWorldModel)
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE WorldModel Decoder)
+target_link_libraries(my_app PRIVATE WorldModel Decoder VectorModel)
 ```
 
 ```cpp
 #include "WorldModel.h"
 #include "Decoder.h"
+#include "VectorModel.h"
 ```
 
-Leave Decoder out if you do not reconstruct. The test executables
-build alongside; ignore them or exclude them from your default target.
+Leave Decoder out if you do not reconstruct. Leave VectorModel out if
+you paint your own fields. The test executables build alongside;
+ignore them or exclude them from your default target.
 
 Building this repo directly (CLion: open, reload CMake, build, or any
 shell with the toolchain available):
@@ -84,7 +91,8 @@ will compile the same core the same way.
 
 | Binary | Role |
 |--------|------|
-| quick_start | The program below, compiled so this page stays true |
+| quick_start | The WorldModel program below, compiled so this page stays true |
+| vector_start | VectorModel sibling: short obs, raw-action rollout, Head |
 | HypercubeWorldModel | Smoke test of every component |
 | WorldModelTest | Many two-sine draws through the WorldModel; [world_model_test.md](world_model_test.md) |
 | JepaEncoderTest, JepaPredictorTest, CompressionTest | Component tests; see [the root README](../README.md#tests) |
@@ -232,7 +240,7 @@ What the training knobs do to a run is in [predictor.md](predictor.md).
 wm->FieldSize();    // N = 2^dim, length of a view field
 wm->CodeSize();     // 2^k, length of a code, of an action picture, and of E(a)
 wm->K();
-WorldModel::kVersion; // library version string, "1.0.0"
+WorldModel::kVersion; // library version string, "1.1.0"
 wm->Config();       // resolved WorldModelConfig
 wm->ActionEncoderConfig();
 ```
@@ -378,25 +386,35 @@ the reconstruction error behaves as k moves, is in
 
 A sampling planner needs a small surface from a model: encode a view,
 encode an action, step a code, roll a code out over a plan, and score
-the result. The SDK gives the first four and leaves the fifth to the
-caller, because scoring depends on the task and not on the model.
+the result. **VectorModel** is that surface for short-vector hosts.
+WorldModel.Rollout still takes action **codes**. VectorModel.Rollout
+takes **raw** actions, paints them, EncodeAction's the block once, then
+calls WorldModel::Rollout. Scoring is a named Head, or L2 to a goal
+code. WorldModel never sees action bounds.
 
 A sampling planner maps onto the SDK like this:
 
 | Planner needs | SDK | Note |
 |---------------|-----|------|
 | latent_dim | CodeSize() | 2ᵏ |
-| encode(obs) | PaintStripes then Encode | obs is a state vector or a frame written onto the field |
-| encode_action(a) | PaintStripes then EncodeAction | a is the raw bounded action vector. A full k-cube episode per call; encode each distinct action once |
+| encode(obs) | VectorModel::Encode | optional Normaliser, PaintStripes, then WorldModel::Encode. obs last-dim vs N is a hard check |
+| encode_action(a) | VectorModel::EncodeAction | optional act Normaliser, PaintStripes onto code_size |
 | predict(z, za) | Predict | one step, one pair |
-| rollout(z0, actions) | Rollout | H + 1 codes out, the first is z0 |
-| action bounds | caller | the planner samples and clips in raw action space; the model never sees bounds |
-| cost(zs, goal) | caller | distance to a goal code, or a reward head trained on frozen codes |
+| rollout(z0, actions) | VectorModel::Rollout | raw (H × act_dim); H + 1 codes out, the first is z0 |
+| action bounds | VectorModel action low/high | the planner clips here; the WorldModel never sees bounds |
+| cost(zs, goal) | VectorModel::Cost / Head::PlanCost | a fitted Head, or L2 of the last code to a goal code |
+| cube floor | MinDim(obs_dim), MinK(act_dim) | capacity floor, not a config |
 
-A goal is a view like any other: paint it, Encode it, and compare
-codes. Because the model is a map with no memory, the same instance
-serves every planner in turn. A planner that wants predictions on
-many threads uses the replica recipe under Limitations.
+A host that already has a field uses WorldModel and PaintStripes
+itself. VectorModel always paints stripes; there is no painter hook.
+
+A goal is a view like any other: encode it and compare codes, or fit a
+Head on a host y. Because the model is a map with no memory, the same
+instance serves every planner in turn. A planner that wants predictions
+on many threads uses the replica recipe under Limitations.
+
+Worked program: [examples/vector_start.cpp](../examples/vector_start.cpp).
+Do not name this surface after a host suite.
 
 Other surfaces fit the same way. A gym-style environment supplies obs
 and action vectors; a stream supplies windows; an image supplies
@@ -457,9 +475,14 @@ value as given for a host that must serialize its own config.
 
 | Mechanism | What is stored | Optimizer state? |
 |-----------|----------------|------------------|
-| WorldModel Save / Load | Config, Predictor weights | **No** |
+| WorldModel Save / Load | Config, Predictor weights (`HWM1`) | **No** |
 | WorldModel Weights() / LoadWeights() | Predictor weights, verbatim | **No** |
 | Decoder Save / Load | Config, input scale, weights | **No** |
+| VectorModel Save / Load | New magic `HVM1`: WorldModel payload plus optional norms, heads, dims, bounds, host metadata | **No** |
+
+VectorModel::Load of a bare `HWM1` file constructs a wm-only
+VectorModel. WorldModel::Load of an `HVM1` file throws bad magic. Do
+not stuff norms or heads into `HWM1`.
 
 Adam moments, step count, and the best snapshot are not saved. To
 continue training after Load, the schedule starts cold.
@@ -509,8 +532,9 @@ continue training after Load, the schedule starts cold.
   on the full dim-cube: N × dim × gather_span × z_max weights, plus
   the same four training buffers, so it is the largest thing in the
   build when dim is large.
-- There is no reward head, no cost, no action bounds, and no planner.
-  Those belong to the host.
+- The planner itself (CEM, MPPI, …) is a host choice. VectorModel is
+  the model surface a planner talks to, not a planner. RankMe (SVD)
+  stays out of this stdlib-only core.
 
 ## Dependencies
 

@@ -1,6 +1,7 @@
 # HypercubeWorldModel - Change Log
 
 ## Unreleased
+- 1.1.0: VectorModel, Normaliser, Head, MinDim/MinK, and MSE/linR2 health functions in C++ (third product library). VectorModel Save uses a new magic (`HVM1`); `HWM1` is unchanged. Python bindings wrap the C++ types. WorldModel without VectorModel is still the field/code API.
 - Encoder: output_scale presentation gain on the returned cube (default 1, not drive). Delay line stays raw (RawCube). SuggestedOutputScale is target_rms / rms(raw); FitOutputScale sets it; Suggest does not mutate.
 - WorldModel: drop action_scale. Pack is concat. Each encoder has its own output_scale. HWM1 file version 2 writes both scales; Load of v1 maps the old Pack multiplier onto the action encoder and leaves the view at 1. Python WorldModel(..., action_scale=) is gone.
 - Magnitude readouts: MeanAbs and Rms on a span; Encoder RawCube / ScaledCube; WorldModel LastRawCube / LastPacked. CompressionTest, JepaPredictorTest, and WorldModelTest print stage lines through MeanAbs.

@@ -28,8 +28,8 @@ else()
 endif()
 
 # ── Core sources compiled directly into the module (PIC required) ──
-# The SDK is WorldModel plus Decoder; both pull in LCN, and WorldModel
-# pulls in Encoder and Predictor. ThreadPool is a test helper, not SDK.
+# The SDK is WorldModel, Decoder, and VectorModel. ThreadPool is a test
+# helper, not SDK.
 set(CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(CORE_SOURCES
     ${CORE_DIR}/Encoder/Encoder.cpp
@@ -38,6 +38,11 @@ set(CORE_SOURCES
     ${CORE_DIR}/Predictor/Predictor.cpp
     ${CORE_DIR}/Decoder/Decoder.cpp
     ${CORE_DIR}/WorldModel/WorldModel.cpp
+    ${CORE_DIR}/Normaliser/Normaliser.cpp
+    ${CORE_DIR}/Head/Solver.cpp
+    ${CORE_DIR}/Head/Head.cpp
+    ${CORE_DIR}/VectorModel/VectorModel.cpp
+    ${CORE_DIR}/VectorModel/Metrics.cpp
 )
 
 # ── Package version (single source: hypercube_worldmodel/_version.py) ──
@@ -65,7 +70,10 @@ target_include_directories(_core PRIVATE
     ${CORE_DIR}/LCN
     ${CORE_DIR}/Predictor
     ${CORE_DIR}/Decoder
-    ${CORE_DIR}/WorldModel)
+    ${CORE_DIR}/WorldModel
+    ${CORE_DIR}/Normaliser
+    ${CORE_DIR}/Head
+    ${CORE_DIR}/VectorModel)
 target_compile_definitions(_core PRIVATE
     "HYPERCUBE_WORLDMODEL_VERSION=\"${HYPERCUBE_WORLDMODEL_VERSION}\"")
 

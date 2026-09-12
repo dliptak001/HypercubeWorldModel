@@ -1,15 +1,14 @@
-"""A planner adapter on a toy world.
+"""A VectorModel planner on a toy world.
 
 The world is the plane point from plane_point.py with a goal: reach a
-target position. The adapter is the latent-world-model protocol:
+target position. VectorModel is the latent-world-model protocol:
 encode, encode_action, predict, rollout, cost, plus action_space.low /
 .high. CEM samples raw actions and calls rollout with those arrays;
-the adapter paints and encode_action's the block once, then WorldModel
-rollout on the codes. Swap the environment for another state-based
-task and keep this adapter.
+VectorModel paints and encode_action's the block once, then
+WorldModel.rollout on the codes.
 
 encode_action is a full episode on the action cube. That is the hot
-path of a sampler. The adapter does it once per CEM iteration, not
+path of a sampler. VectorModel does it once per CEM iteration, not
 once per predict step.
 """
 
@@ -50,62 +49,12 @@ wm = hw.WorldModel(dim=DIM, k=K, passes=2 * DIM, leak_rate=0.25, input_scaling=0
 obs = rng.uniform(-1, 1, (512, 2)).astype(np.float32)
 act = rng.uniform(-1, 1, (512, 2)).astype(np.float32)
 nxt = np.clip(obs + STEP * act, -1, 1).astype(np.float32)
-z = wm.encode(hw.paint_stripes(obs, wm.N))
-za = wm.encode_action(hw.paint_stripes(act, wm.code_size))
-zn = wm.encode(hw.paint_stripes(nxt, wm.N))
+model = hw.VectorModel(wm, action_low=PlaneWorld.action_low,
+                       action_high=PlaneWorld.action_high)
+z = model.encode(obs)
+za = model.encode_action(act)
+zn = model.encode(nxt)
 wm.fit(z, za, zn, epochs=150, batch_size=16)
-
-
-# ── The adapter: latent world model protocol ──
-
-class ActionSpace:
-    """Bounds only. CEM reads .low and .high; not a gymnasium Box."""
-
-    def __init__(self, low, high):
-        self.low = np.asarray(low, dtype=np.float32)
-        self.high = np.asarray(high, dtype=np.float32)
-
-
-class Adapter:
-    """WorldModel behind the planner protocol.
-
-    encode and encode_action take raw obs / actions. predict takes codes.
-    rollout takes raw actions (B, H, act_dim), paints and encode_action's
-    that block once, then WorldModel.rollout on the codes. cost scores a
-    rollout against a goal code. The model never sees action bounds.
-    """
-
-    def __init__(self, wm, action_low, action_high):
-        self.wm = wm
-        self.latent_dim = wm.code_size
-        self.action_space = ActionSpace(action_low, action_high)
-
-    def encode(self, obs):
-        return self.wm.encode(hw.paint_stripes(obs, self.wm.N))
-
-    def encode_action(self, a):
-        return self.wm.encode_action(hw.paint_stripes(a, self.wm.code_size))
-
-    def predict(self, z, za):
-        return self.wm.predict(z, za)
-
-    def rollout(self, z0, actions):
-        # (B, H, act_dim) raw actions -> (B, H+1, latent). One plan is (H, act_dim).
-        a = np.asarray(actions, dtype=np.float32)
-        z = np.asarray(z0, dtype=np.float32)
-        one = a.ndim == 2
-        if one:
-            a = a[None, ...]
-            if z.ndim == 1:
-                z = z[None, :]
-        B, H, d = a.shape
-        codes = self.encode_action(a.reshape(B * H, d)).reshape(B, H, -1)
-        out = self.wm.rollout(z, codes)
-        return out[0] if one else out
-
-    def cost(self, zs, goal_z):
-        # distance between the final code and the goal code; lower is better
-        return np.sum((zs[:, -1, :] - goal_z) ** 2, axis=1)
 
 
 # ── Cross-entropy method with a warm start ──
@@ -128,7 +77,6 @@ def cem_plan(model, z0, goal_z, mean=None):
 # ── Run one episode: plan, execute the first action, replan ──
 
 env = PlaneWorld()
-model = Adapter(wm, PlaneWorld.action_low, PlaneWorld.action_high)
 goal = np.array([0.6, -0.4], dtype=np.float32)
 goal_z = model.encode(goal)
 

@@ -18,8 +18,11 @@
 | passes | Episode length T. 0 means a full tour of that encoder's cube. |
 | z_max | Predictor depth. 0 means k+1. |
 | output_scale | Encoder presentation gain at Create. Default 1. View and action can be set independently after. |
-| rollout | WorldModel.rollout takes action **codes**. A vector adapter's rollout takes raw actions and encodes them once. |
-| action_space | Bounds: .low and .high. Not a gymnasium Box. The WorldModel never sees bounds. |
+| rollout | WorldModel.rollout takes action **codes**. VectorModel.rollout takes raw actions and encodes them once. |
+| action_space | Bounds: .low and .high on VectorModel. Not a gymnasium Box. The WorldModel never sees bounds. |
+| Normaliser | Per-dimension affine + clip into [-1, 1]. Optional on VectorModel. |
+| Head | Ridge from a code to a host y. kind linear or quadratic; sign cost or reward. |
+| min_dim, min_k | Capacity floors: max(6, ceil(log2(obs_dim))) and max(5, ceil(log2(act_dim))). |
 
 HypercubeWorldModel is a **world model with frozen encoders** on a
 Boolean hypercube. Its neurons sit on the vertices of the cube: a cube
@@ -35,12 +38,14 @@ output is the action code, E(a). A locally connected net, the
 Predictor, learns to map E(x) and E(a) to the next E(x). It is the only
 part of the world model that trains.
 
-Two classes own the product. **WorldModel** is the world model: the
+Three classes own the product. **WorldModel** is the world model: the
 two encoders and the Predictor. **Decoder** is reconstruction: a
 second locally connected net that takes a code of 2ᵏ values and gives
-back a field of N, trained on its own. One function, **paint_stripes**,
-turns a short vector into a field. A planner needs only the first
-class. A task that has to see what a code stands for needs the second.
+back a field of N, trained on its own. **VectorModel** is the planner
+surface for vector hosts (optional Normaliser, PaintStripes, raw-action
+rollout, named Heads). One function, **paint_stripes**, turns a short
+vector into a field. A host that already has a field uses WorldModel.
+A task that has to see what a code stands for needs the Decoder.
 
 This is a **map API**, not a stream API: one field in, one episode, one
 code out. The model does not remember the last view. State that has to
@@ -424,8 +429,8 @@ encode an action, step a code, roll a code out over a plan, and score
 the result. The package gives the first four and leaves the fifth to
 the caller, because scoring depends on the task and not on the model.
 
-A sampling planner maps onto the package through a thin adapter.
-WorldModel.rollout takes action **codes**. The adapter's rollout
+A sampling planner maps onto the package through **VectorModel**.
+WorldModel.rollout takes action **codes**. VectorModel.rollout
 takes **raw** actions (B, H, act_dim), paints and encode_action's
 that block once, then calls WorldModel.rollout. CEM is then
 copy-paste: it samples in action space and passes those arrays to
@@ -440,17 +445,17 @@ writes.
 | Planner needs | Where | Note |
 |---------------|-------|------|
 | latent_dim | code_size | 2ᵏ |
-| encode(obs) | paint_stripes then encode | obs is (count, obs_dim) **state**. Not a pixel frame |
-| encode_action(a) | paint_stripes then encode_action | raw bounded actions. A full action episode per row |
+| encode(obs) | VectorModel.encode | obs is (count, obs_dim) **state**. Not a pixel frame |
+| encode_action(a) | VectorModel.encode_action | raw bounded actions. A full action episode per row |
 | predict(z, za) | predict | codes in, codes out; batches in C++ |
-| rollout(z0, actions) | adapter: raw (B, H, act_dim) | encodes the block once, then WorldModel.rollout on codes |
-| action_space.low / .high | adapter.action_space | planner clips here; the WorldModel never sees bounds |
-| cost(zs, goal) | caller | distance to a goal code, or a head on frozen codes |
+| rollout(z0, actions) | VectorModel: raw (B, H, act_dim) | encodes the block once, then WorldModel.rollout on codes |
+| action_space.low / .high | VectorModel.action_space | planner clips here; the WorldModel never sees bounds |
+| cost(zs, goal) | VectorModel.cost / Head.plan_cost | a fitted Head, or L2 of the last code to a goal code |
 
-A goal is a view like any other: paint it, encode it, and compare
-codes. [python/examples/plan_toy.py](../python/examples/plan_toy.py)
-is that adapter, with CEM. For another state-based task, swap the
-environment and keep the adapter.
+A goal is a view like any other: encode it and compare codes, or fit a
+Head on a host y. [python/examples/plan_toy.py](../python/examples/plan_toy.py)
+is VectorModel with CEM. For another state-based task, swap the
+environment and keep VectorModel.
 
 ## Error handling
 
@@ -483,9 +488,10 @@ Typical mistakes:
 
 | Mechanism | What is stored | Optimizer state? |
 |-----------|----------------|------------------|
-| WorldModel save / load | Config, Predictor weights, in the C++ WorldModel file format | **No** |
+| WorldModel save / load | Config, Predictor weights, in the C++ WorldModel file format (`HWM1`) | **No** |
 | Decoder save / load | Config, input scale, weights, in the C++ Decoder file format | **No** |
-| pickle, either class | Constructor keywords plus weights (plus the input scale for a Decoder) | **No** |
+| VectorModel save / load | C++ VectorModel file (`HVM1`): WorldModel plus optional norms, heads, bounds, metadata | **No** |
+| pickle, WorldModel / Decoder | Constructor keywords plus weights (plus the input scale for a Decoder) | **No** |
 
 save writes the same binary file the C++ class writes, so a model
 trained in Python loads in C++ and the other way round. load rebuilds
@@ -493,6 +499,9 @@ both encoders from the seeds in the file and puts the weights back;
 encode, encode_action, and predict on the loaded instance reproduce
 the original exactly, and the test suite checks all three with passes
 left at 0, the case where the two encoders resolve different T.
+VectorModel.save is that new file, not pickle; WorldModel.load of it
+fails with bad magic. VectorModel.load of a bare WorldModel file
+succeeds as wm-only.
 
 pickle captures the constructor keywords as given, passes at 0
 included, and the weight array, so an unpickled model rebuilds the

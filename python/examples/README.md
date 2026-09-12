@@ -6,7 +6,7 @@ installed package.
 | Script | What it shows |
 |--------|----------------|
 | [plane_point.py](plane_point.py) | A point on a plane moved by a bounded velocity: encode, fit with a validation set, a held-out score against the identity guess, rollout, a Decoder beside the model, and a save and load round trip |
-| [plan_toy.py](plan_toy.py) | Planner adapter (encode, encode_action, predict, rollout on raw actions, cost, action_space) driving CEM to a goal on the same toy world |
+| [plan_toy.py](plan_toy.py) | VectorModel (encode, encode_action, predict, rollout on raw actions, cost, action_space) driving CEM to a goal on the same toy world |
 
 ## How to run
 
@@ -32,8 +32,8 @@ python python/examples/plan_toy.py
 - **Not** automated tests. Package tests are
   [tests/test_basic.py](../tests/test_basic.py).
 - **Not** hard tasks. The toy world is easy onboarding so the API is
-  obvious; do not cite its numbers as research results. The planner
-  adapter is the shape to copy when the environment is a real suite.
+  obvious; do not cite its numbers as research results. VectorModel is
+  the shape to copy when the environment is a real vector host.
 
 ## Going further
 

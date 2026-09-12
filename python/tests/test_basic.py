@@ -446,3 +446,128 @@ def test_decoder_save_load_and_pickle(tmp_path):
     pickled = pickle.loads(pickle.dumps(dec))
     assert pickled.input_scale == dec.input_scale
     np.testing.assert_array_equal(pickled.decode(z), dec.decode(z))
+
+
+# ── Normaliser / Head / VectorModel ──
+
+def test_min_dim_min_k():
+    assert hw.min_dim(6) == 6
+    assert hw.min_dim(67) == 7
+    assert hw.min_k(2) == 5
+    assert hw.min_k(38) == 6
+
+
+def test_normaliser_fit_apply_roundtrip():
+    rng = np.random.default_rng(0)
+    x = rng.normal(2.0, 0.5, (32, 4)).astype(np.float32)
+    n = hw.Normaliser.fit(x, clip=3.0)
+    y = n(x)
+    assert y.shape == x.shape
+    assert np.all(y >= -1.0) and np.all(y <= 1.0)
+    again = hw.Normaliser.from_state(n.state())
+    np.testing.assert_allclose(again(x), y, rtol=1e-5)
+    with pytest.raises(ValueError):
+        hw.Normaliser.fit(x, clip=float("nan"))
+
+
+def test_head_quadratic_toy_distance():
+    rng = np.random.default_rng(1)
+    a = rng.uniform(-1, 1, (80, 2)).astype(np.float32)
+    b = rng.uniform(-1, 1, (80, 2)).astype(np.float32)
+    z = np.concatenate([a, b], axis=1)
+    y = ((a - b) ** 2).sum(1)
+    h = hw.Head(kind="quadratic", ridge=1e-3, sign="cost").fit(z, y)
+    assert h.score(z, y)["r2"] > 0.99
+    lin = hw.Head(kind="linear", ridge=1e-3).fit(z, y)
+    assert lin.score(z, y)["r2"] < h.score(z, y)["r2"]
+    with pytest.raises(ValueError):
+        h(z, z)
+
+
+def test_head_za_optional_and_plan_cost():
+    rng = np.random.default_rng(2)
+    z = rng.standard_normal((16, 8)).astype(np.float32)
+    za = rng.standard_normal((16, 8)).astype(np.float32)
+    y = z[:, 0] + 0.1 * za[:, 0]
+    h = hw.Head(kind="linear").fit(z, y, za)
+    p = h(z, za)
+    assert p.shape == (16,)
+    with pytest.raises(ValueError):
+        h(z)
+    h2 = hw.Head(kind="linear", sign="reward").fit(z, z[:, 0])
+    zs = rng.standard_normal((3, 5, 8)).astype(np.float32)
+    c = h2.plan_cost()(zs)
+    assert c.shape == (3,)
+    # reward head negates; a cost head on the same y has the opposite sign
+    h3 = hw.Head(kind="linear", sign="cost").fit(z, z[:, 0])
+    assert np.allclose(h3.plan_cost()(zs), -c)
+
+
+def test_vector_model_encode_rollout_and_capacity():
+    wm = make_wm()
+    vm = hw.VectorModel(wm, action_low=[-1, -1], action_high=[1, 1])
+    obs, act, nxt = plane(8)
+    z = vm.encode(obs)
+    za = vm.encode_action(act)
+    assert z.shape == (8, wm.code_size)
+    path = vm.rollout(z[0], act[:3])
+    assert path.shape == (4, wm.code_size)
+    np.testing.assert_array_equal(path[0], z[0])
+    with pytest.raises(ValueError) as e:
+        vm.encode(np.zeros(wm.N + 1, np.float32))
+    msg = str(e.value)
+    assert str(wm.N + 1) in msg and str(wm.N) in msg
+    with pytest.raises(ValueError) as e:
+        hw.VectorModel(wm).encode_action(np.zeros(wm.code_size + 1, np.float32))
+    msg = str(e.value)
+    assert str(wm.code_size + 1) in msg and str(wm.code_size) in msg
+
+
+def test_vector_model_save_load_and_hwm1(tmp_path):
+    wm = make_wm()
+    obs, act, _ = plane(8)
+    norm = hw.Normaliser.fit(obs)
+    vm = hw.VectorModel(wm, obs_norm=norm, action_low=[-1, -1], action_high=[1, 1])
+    z = vm.encode(obs)
+    y = (obs ** 2).sum(1)
+    head = hw.Head(kind="linear").fit(z, y)
+    vm.set_head("dist2", head)
+    vm.set_meta("domain", "toy")
+    path = tmp_path / "model.hvm"
+    vm.save(path)
+    again = hw.VectorModel.load(path)
+    np.testing.assert_array_equal(again.encode(obs), z)
+    np.testing.assert_allclose(again.obs_norm.mean, norm.mean)
+    assert again.meta("domain") == "toy"
+    assert "dist2" in again.heads
+    with pytest.raises(RuntimeError):
+        hw.WorldModel.load(path)
+    wm_path = tmp_path / "bare.wm"
+    wm.save(wm_path)
+    bare = hw.VectorModel.load(wm_path)
+    assert bare.heads == {}
+    hw.WorldModel.load(wm_path)
+
+
+def test_metrics_on_toy_batch():
+    wm = make_wm()
+    vm = hw.VectorModel(wm, action_low=[-1, -1], action_high=[1, 1])
+    obs, act, nxt = plane(32)
+    z = vm.encode(obs)
+    zn = vm.encode(nxt)
+    mse = float(np.mean((z - zn) ** 2))
+    r = hw.one_step_ratio(mse, z, zn)
+    assert r > 0
+    n = hw.Normaliser.fit(obs)
+    lr = hw.lin_r2(z, n(obs), z, n(obs))
+    assert "min" in lr and "mean" in lr
+    rng = np.random.default_rng(0)
+    actm = hw.action_sensitivity(z, wm.predict, vm.encode_action, 2, mse, rng, n=8)
+    assert "act" in actm
+    obs_ep = np.stack([obs[:8], nxt[:8]], 0)[:, :4]
+    # fake short episodes: (2, 4, 2) needs T=3 act
+    obs_ep = np.zeros((2, 5, 2), np.float32)
+    act_ep = np.zeros((2, 4, 2), np.float32)
+    obs_ep[:, 0] = obs[:2]
+    re = hw.rollout_error(vm, obs_ep, act_ep, 2, 2, rng)
+    assert re["ratio"].shape == (2,)

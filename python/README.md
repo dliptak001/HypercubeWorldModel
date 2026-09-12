@@ -95,9 +95,11 @@ The aim, then, is a world model whose encoders cost nothing to
 train, whose code is a face of the cube it was born on, and whose
 dynamics learn from that code alone.
 
-In Python the product is two classes, **hypercube_worldmodel.WorldModel**
-and **hypercube_worldmodel.Decoder**, plus one function,
-**paint_stripes**, that turns a short vector into a field.
+In Python the product is **hypercube_worldmodel.WorldModel**,
+**Decoder**, and **VectorModel**, plus **paint_stripes**,
+**Normaliser**, **Head**, and the sizing / health functions. VectorModel
+is the planner surface for short-vector hosts; leave it out if you
+paint your own fields.
 
 ---
 

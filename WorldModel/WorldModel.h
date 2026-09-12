@@ -9,8 +9,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <vector>
 
 /// @brief Paint a short vector onto a field as contiguous stripes.
@@ -109,7 +111,7 @@ class WorldModel
 {
 public:
     /// Library version; matches the CMake project VERSION.
-    static constexpr const char kVersion[] = "1.0.0";
+    static constexpr const char kVersion[] = "1.1.0";
 
     /// @brief Validate @p cfg, build both Encoders and the Predictor.
     /// @throws std::invalid_argument if k is not in [5, encoder.dim),
@@ -131,6 +133,14 @@ public:
     /// written.
     /// @throws std::runtime_error if the file cannot be written.
     void Save(const std::filesystem::path& file) const;
+
+    /// Same payload as @ref Save to a path, written to an already-open
+    /// binary stream. Used by VectorModel to embed a WorldModel.
+    void Save(std::ostream& os) const;
+
+    /// @brief Read a WorldModel from an already-open binary stream.
+    /// @p source is the name used in error messages.
+    static std::unique_ptr<WorldModel> Load(std::istream& is, std::string_view source);
 
     WorldModel(const WorldModel&) = delete;
     WorldModel& operator=(const WorldModel&) = delete;

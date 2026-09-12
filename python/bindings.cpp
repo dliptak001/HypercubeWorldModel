@@ -7,7 +7,10 @@
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 #include <pybind11/stl/filesystem.h>
+
+#include <optional>
 
 #include <cstring>
 #include <filesystem>
@@ -19,6 +22,10 @@
 #include <vector>
 
 #include "Decoder.h"
+#include "Head.h"
+#include "Metrics.h"
+#include "Normaliser.h"
+#include "VectorModel.h"
 #include "WorldModel.h"
 
 namespace py = pybind11;
@@ -540,4 +547,429 @@ PYBIND11_MODULE(_core, m)
         .def_property_readonly("code_size", &Decoder::CodeSize)
         .def_property_readonly("field_size", &Decoder::FieldSize)
         .def_property_readonly("num_weights", [](const Decoder& self) { return self.Weights().size(); });
+
+    // ── Normaliser ──
+
+    py::class_<Normaliser>(m, "_Normaliser")
+        .def_static("fit", [](FloatArray x, float clip) {
+            const auto b = x.request();
+            if (b.ndim != 2)
+                throw std::invalid_argument("Normaliser.fit x must be 2-D (count, dim)");
+            const size_t count = static_cast<size_t>(b.shape[0]);
+            const size_t dim = static_cast<size_t>(b.shape[1]);
+            return Normaliser::Fit(
+                std::span<const float>(static_cast<const float*>(b.ptr), count * dim),
+                dim, clip);
+        }, py::arg("x"), py::arg("clip") = 3.f)
+        .def_static("from_state", [](FloatArray mean, FloatArray std, float clip) {
+            const auto mb = mean.request(), sb = std.request();
+            return Normaliser::FromState(
+                std::span<const float>(static_cast<const float*>(mb.ptr),
+                                       static_cast<size_t>(mb.size)),
+                std::span<const float>(static_cast<const float*>(sb.ptr),
+                                       static_cast<size_t>(sb.size)),
+                clip);
+        }, py::arg("mean"), py::arg("std"), py::arg("clip"))
+        .def("apply", [](const Normaliser& self, FloatArray x) {
+            const auto b = x.request();
+            if (b.ndim != 2)
+                throw std::invalid_argument("Normaliser.apply x must be 2-D (count, dim)");
+            const size_t count = static_cast<size_t>(b.shape[0]);
+            const size_t dim = static_cast<size_t>(b.shape[1]);
+            py::array_t<float> out = Matrix(count, dim);
+            {
+                py::gil_scoped_release release;
+                self.Apply(std::span<const float>(static_cast<const float*>(b.ptr), count * dim),
+                           std::span<float>(out.mutable_data(), count * dim));
+            }
+            return out;
+        }, py::arg("x"))
+        .def_property_readonly("dim", &Normaliser::Dim)
+        .def_property_readonly("clip", &Normaliser::Clip)
+        .def("mean", [](const Normaliser& self) { return VectorToArray(self.Mean()); })
+        .def("std", [](const Normaliser& self) { return VectorToArray(self.Std()); });
+
+    // ── Head ──
+
+    py::class_<Head>(m, "_Head")
+        .def(py::init([](const std::string& kind, float ridge, const std::string& sign) {
+            Head::Kind k = Head::Kind::Quadratic;
+            if (kind == "linear")
+                k = Head::Kind::Linear;
+            else if (kind != "quadratic")
+                throw std::invalid_argument("kind must be 'linear' or 'quadratic', not " + kind);
+            Head::Sign s = Head::Sign::Cost;
+            if (sign == "reward")
+                s = Head::Sign::Reward;
+            else if (sign != "cost")
+                throw std::invalid_argument("sign must be 'cost' or 'reward', not " + sign);
+            return Head(k, ridge, s);
+        }), py::arg("kind") = "quadratic", py::arg("ridge") = 1e-3f, py::arg("sign") = "cost")
+        .def("fit", [](Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za) {
+            const auto zb = z.request(), yb = y.request();
+            if (zb.ndim != 2)
+                throw std::invalid_argument("Head.fit z must be 2-D (count, code)");
+            if (yb.ndim != 1)
+                throw std::invalid_argument("Head.fit y must be 1-D (count,)");
+            const size_t count = static_cast<size_t>(zb.shape[0]);
+            const size_t code = static_cast<size_t>(zb.shape[1]);
+            if (static_cast<size_t>(yb.shape[0]) != count)
+                throw std::invalid_argument("Head.fit y length must match z rows");
+            std::span<const float> za_span{};
+            if (za)
+            {
+                const auto ab = za->request();
+                if (ab.ndim != 2 || static_cast<size_t>(ab.shape[0]) != count ||
+                    static_cast<size_t>(ab.shape[1]) != code)
+                    throw std::invalid_argument("Head.fit za must match z");
+                za_span = std::span<const float>(static_cast<const float*>(ab.ptr), count * code);
+            }
+            py::gil_scoped_release release;
+            self.Fit(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
+                     code,
+                     std::span<const float>(static_cast<const float*>(yb.ptr), count),
+                     count, za_span);
+        }, py::arg("z"), py::arg("y"), py::arg("za") = py::none())
+        .def("apply", [](const Head& self, FloatArray z, std::optional<FloatArray> za) {
+            const auto zb = z.request();
+            if (zb.ndim != 2)
+                throw std::invalid_argument("Head.apply z must be 2-D (count, code)");
+            const size_t count = static_cast<size_t>(zb.shape[0]);
+            const size_t code = static_cast<size_t>(zb.shape[1]);
+            std::span<const float> za_span{};
+            if (za)
+            {
+                const auto ab = za->request();
+                za_span = std::span<const float>(static_cast<const float*>(ab.ptr),
+                                                 static_cast<size_t>(ab.size));
+            }
+            py::array_t<float> out(static_cast<py::ssize_t>(count));
+            {
+                py::gil_scoped_release release;
+                self.Apply(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
+                           std::span<float>(out.mutable_data(), count), za_span);
+            }
+            return out;
+        }, py::arg("z"), py::arg("za") = py::none())
+        .def("score", [](const Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za) {
+            const auto zb = z.request(), yb = y.request();
+            std::span<const float> za_span{};
+            if (za)
+            {
+                const auto ab = za->request();
+                za_span = std::span<const float>(static_cast<const float*>(ab.ptr),
+                                                 static_cast<size_t>(ab.size));
+            }
+            Head::Score s;
+            {
+                py::gil_scoped_release release;
+                s = self.ScoreOn(
+                    std::span<const float>(static_cast<const float*>(zb.ptr),
+                                           static_cast<size_t>(zb.size)),
+                    std::span<const float>(static_cast<const float*>(yb.ptr),
+                                           static_cast<size_t>(yb.size)),
+                    za_span);
+            }
+            py::dict d;
+            d["r2"] = s.r2;
+            if (s.has_auc)
+            {
+                d["auc"] = s.auc;
+                d["positives"] = s.positives;
+            }
+            return d;
+        }, py::arg("z"), py::arg("y"), py::arg("za") = py::none())
+        .def("plan_cost", [](const Head& self, FloatArray zs) {
+            const auto b = zs.request();
+            if (b.ndim != 3)
+                throw std::invalid_argument("plan_cost zs must be 3-D (B, H+1, code)");
+            const size_t batch = static_cast<size_t>(b.shape[0]);
+            const size_t h1 = static_cast<size_t>(b.shape[1]);
+            const size_t code = static_cast<size_t>(b.shape[2]);
+            py::array_t<float> out(static_cast<py::ssize_t>(batch));
+            {
+                py::gil_scoped_release release;
+                self.PlanCost(std::span<const float>(static_cast<const float*>(b.ptr),
+                                                     batch * h1 * code),
+                              batch, h1, std::span<float>(out.mutable_data(), batch));
+            }
+            return out;
+        }, py::arg("zs"))
+        .def_static("from_state", [](const std::string& kind, const std::string& sign, float ridge,
+                                     bool uses_za, size_t code, FloatArray w, float b,
+                                     FloatArray mu, FloatArray sd) {
+            Head::Kind k = kind == "linear" ? Head::Kind::Linear : Head::Kind::Quadratic;
+            Head::Sign s = sign == "reward" ? Head::Sign::Reward : Head::Sign::Cost;
+            if (kind != "linear" && kind != "quadratic")
+                throw std::invalid_argument("kind must be 'linear' or 'quadratic'");
+            if (sign != "cost" && sign != "reward")
+                throw std::invalid_argument("sign must be 'cost' or 'reward'");
+            const auto wb = w.request(), mb = mu.request(), sb = sd.request();
+            return Head::FromState(
+                k, s, ridge, uses_za, code,
+                std::span<const float>(static_cast<const float*>(wb.ptr), static_cast<size_t>(wb.size)),
+                b,
+                std::span<const float>(static_cast<const float*>(mb.ptr), static_cast<size_t>(mb.size)),
+                std::span<const float>(static_cast<const float*>(sb.ptr), static_cast<size_t>(sb.size)));
+        })
+        .def_property_readonly("kind", [](const Head& self) {
+            return self.GetKind() == Head::Kind::Linear ? "linear" : "quadratic";
+        })
+        .def_property_readonly("sign", [](const Head& self) {
+            return self.GetSign() == Head::Sign::Reward ? "reward" : "cost";
+        })
+        .def_property_readonly("ridge", &Head::Ridge)
+        .def_property_readonly("uses_za", &Head::UsesZa)
+        .def_property_readonly("fitted", &Head::Fitted)
+        .def_property_readonly("code_size", &Head::CodeSize)
+        .def_property_readonly("b", &Head::Bias)
+        .def("w", [](const Head& self) { return VectorToArray(self.Weights()); })
+        .def("mu", [](const Head& self) { return VectorToArray(self.Mu()); })
+        .def("sd", [](const Head& self) { return VectorToArray(self.Sd()); });
+
+    // ── VectorModel ──
+
+    py::class_<VectorModel>(m, "_VectorModel")
+        .def(py::init([](WorldModel& wm) {
+            return VectorModel::Attach(wm);
+        }), py::keep_alive<1, 2>(), py::arg("wm"))
+        .def_static("load", [](const std::filesystem::path& file) {
+            return VectorModel::Load(file);
+        }, py::arg("path"))
+        .def("save", [](const VectorModel& self, const std::filesystem::path& file) {
+            self.Save(file);
+        }, py::arg("path"))
+        .def("world", [](VectorModel& self) -> WorldModel& { return self.World(); },
+             py::return_value_policy::reference_internal)
+        .def("set_obs_norm", &VectorModel::SetObsNormaliser, py::arg("norm"))
+        .def("set_act_norm", &VectorModel::SetActNormaliser, py::arg("norm"))
+        .def("clear_obs_norm", &VectorModel::ClearObsNormaliser)
+        .def("clear_act_norm", &VectorModel::ClearActNormaliser)
+        .def("obs_norm", [](const VectorModel& self) -> py::object {
+            const Normaliser* n = self.ObsNormaliser();
+            if (!n)
+                return py::none();
+            return py::cast(*n);
+        })
+        .def("act_norm", [](const VectorModel& self) -> py::object {
+            const Normaliser* n = self.ActNormaliser();
+            if (!n)
+                return py::none();
+            return py::cast(*n);
+        })
+        .def("set_action_bounds", [](VectorModel& self, FloatArray low, FloatArray high) {
+            const auto lb = low.request(), hb = high.request();
+            self.SetActionBounds(
+                std::span<const float>(static_cast<const float*>(lb.ptr), static_cast<size_t>(lb.size)),
+                std::span<const float>(static_cast<const float*>(hb.ptr), static_cast<size_t>(hb.size)));
+        }, py::arg("low"), py::arg("high"))
+        .def("action_low", [](const VectorModel& self) { return VectorToArray(
+            std::vector<float>(self.ActionLow().begin(), self.ActionLow().end())); })
+        .def("action_high", [](const VectorModel& self) { return VectorToArray(
+            std::vector<float>(self.ActionHigh().begin(), self.ActionHigh().end())); })
+        .def("has_action_bounds", &VectorModel::HasActionBounds)
+        .def("set_head", [](VectorModel& self, const std::string& name, const Head& h) {
+            self.SetHead(name, h);
+        }, py::arg("name"), py::arg("head"))
+        .def("remove_head", [](VectorModel& self, const std::string& name) { self.RemoveHead(name); })
+        .def("get_head", [](VectorModel& self, const std::string& name) -> py::object {
+            Head* h = self.GetHead(name);
+            if (!h)
+                return py::none();
+            return py::cast(*h);
+        }, py::arg("name"))
+        .def("head_names", [](const VectorModel& self) {
+            std::vector<std::string> names;
+            for (const auto& [k, _] : self.Heads())
+                names.push_back(k);
+            return names;
+        })
+        .def("set_meta", &VectorModel::SetMeta, py::arg("key"), py::arg("value"))
+        .def("meta", [](const VectorModel& self, const std::string& key) {
+            return self.Meta(key);
+        }, py::arg("key"))
+        .def("meta_map", [](const VectorModel& self) { return self.MetaMap(); })
+        .def_property_readonly("obs_dim", &VectorModel::ObsDim)
+        .def_property_readonly("act_dim", &VectorModel::ActDim)
+        .def("set_obs_dim", &VectorModel::SetObsDim)
+        .def("set_act_dim", &VectorModel::SetActDim)
+        .def("encode", [](VectorModel& self, FloatArray obs) {
+            const auto b = obs.request();
+            if (b.ndim != 2)
+                throw std::invalid_argument("encode obs must be 2-D (count, obs_dim)");
+            const size_t count = static_cast<size_t>(b.shape[0]);
+            const size_t d = static_cast<size_t>(b.shape[1]);
+            const size_t c = self.CodeSize();
+            py::array_t<float> out = Matrix(count, c);
+            const float* p = static_cast<const float*>(b.ptr);
+            float* o = out.mutable_data();
+            {
+                py::gil_scoped_release release;
+                for (size_t i = 0; i < count; ++i)
+                    self.Encode(std::span<const float>(p + i * d, d),
+                                std::span<float>(o + i * c, c));
+            }
+            return out;
+        }, py::arg("obs"))
+        .def("encode_action", [](VectorModel& self, FloatArray a) {
+            const auto b = a.request();
+            if (b.ndim != 2)
+                throw std::invalid_argument("encode_action a must be 2-D (count, act_dim)");
+            const size_t count = static_cast<size_t>(b.shape[0]);
+            const size_t d = static_cast<size_t>(b.shape[1]);
+            const size_t c = self.CodeSize();
+            py::array_t<float> out = Matrix(count, c);
+            const float* p = static_cast<const float*>(b.ptr);
+            float* o = out.mutable_data();
+            {
+                py::gil_scoped_release release;
+                for (size_t i = 0; i < count; ++i)
+                    self.EncodeAction(std::span<const float>(p + i * d, d),
+                                      std::span<float>(o + i * c, c));
+            }
+            return out;
+        }, py::arg("a"))
+        .def("predict", [](VectorModel& self, FloatArray z, FloatArray za) {
+            const size_t c = self.CodeSize();
+            const Rows zi = AsRows(z, c, "z");
+            const Rows ai = AsRows(za, c, "za");
+            RequireSameRows(zi.count, ai.count, "predict");
+            py::array_t<float> out = Matrix(zi.count, c);
+            float* o = out.mutable_data();
+            {
+                py::gil_scoped_release release;
+                for (size_t i = 0; i < zi.count; ++i)
+                {
+                    const float* hat = self.Predict(std::span<const float>(zi.data + i * c, c),
+                                                    std::span<const float>(ai.data + i * c, c));
+                    std::memcpy(o + i * c, hat, c * sizeof(float));
+                }
+            }
+            return out;
+        }, py::arg("z"), py::arg("za"))
+        .def("rollout", [](VectorModel& self, FloatArray z0, FloatArray actions) {
+            const size_t c = self.CodeSize();
+            const Rows zi = AsRows(z0, c, "z0");
+            const auto ab = actions.request();
+            if (ab.ndim != 3)
+                throw std::invalid_argument("rollout actions must be 3-D (rows, H, act_dim)");
+            const size_t rows = static_cast<size_t>(ab.shape[0]);
+            const size_t h = static_cast<size_t>(ab.shape[1]);
+            const size_t ad = static_cast<size_t>(ab.shape[2]);
+            RequireSameRows(zi.count, rows, "rollout");
+            if (self.ActDim() == 0)
+                self.SetActDim(ad);
+            const float* a = static_cast<const float*>(ab.ptr);
+            py::array_t<float> out({static_cast<py::ssize_t>(rows),
+                                    static_cast<py::ssize_t>(h + 1),
+                                    static_cast<py::ssize_t>(c)});
+            float* o = out.mutable_data();
+            {
+                py::gil_scoped_release release;
+                for (size_t i = 0; i < rows; ++i)
+                    self.Rollout(std::span<const float>(zi.data + i * c, c),
+                                 std::span<const float>(a + i * h * ad, h * ad),
+                                 std::span<float>(o + i * (h + 1) * c, (h + 1) * c));
+            }
+            return out;
+        }, py::arg("z0"), py::arg("actions"))
+        .def("cost", [](const VectorModel& self, FloatArray zs, std::optional<FloatArray> goal_z) {
+            const auto b = zs.request();
+            if (b.ndim != 3)
+                throw std::invalid_argument("cost zs must be 3-D (B, H+1, code)");
+            const size_t batch = static_cast<size_t>(b.shape[0]);
+            const size_t h1 = static_cast<size_t>(b.shape[1]);
+            const size_t code = static_cast<size_t>(b.shape[2]);
+            std::span<const float> goal{};
+            if (goal_z)
+            {
+                const auto gb = goal_z->request();
+                goal = std::span<const float>(static_cast<const float*>(gb.ptr),
+                                              static_cast<size_t>(gb.size));
+            }
+            py::array_t<float> out(static_cast<py::ssize_t>(batch));
+            {
+                py::gil_scoped_release release;
+                self.Cost(std::span<const float>(static_cast<const float*>(b.ptr),
+                                                 batch * h1 * code),
+                          batch, h1, std::span<float>(out.mutable_data(), batch), goal);
+            }
+            return out;
+        }, py::arg("zs"), py::arg("goal_z") = py::none());
+
+    m.def("min_dim", &MinDim, py::arg("obs_dim"));
+    m.def("min_k", &MinK, py::arg("act_dim"));
+
+    m.def("no_change_mse", [](FloatArray z, FloatArray zn) {
+        const auto a = z.request(), b = zn.request();
+        return NoChangeMse(std::span<const float>(static_cast<const float*>(a.ptr),
+                                                  static_cast<size_t>(a.size)),
+                           std::span<const float>(static_cast<const float*>(b.ptr),
+                                                  static_cast<size_t>(b.size)));
+    }, py::arg("z"), py::arg("zn"));
+    m.def("one_step_ratio", [](float mse, FloatArray z, FloatArray zn) {
+        const auto a = z.request(), b = zn.request();
+        return OneStepRatio(mse,
+                            std::span<const float>(static_cast<const float*>(a.ptr),
+                                                   static_cast<size_t>(a.size)),
+                            std::span<const float>(static_cast<const float*>(b.ptr),
+                                                   static_cast<size_t>(b.size)));
+    }, py::arg("mse"), py::arg("z"), py::arg("zn"));
+    m.def("action_sensitivity_from_preds", [](FloatArray p1, FloatArray p2, float mse) {
+        const auto a = p1.request(), b = p2.request();
+        const auto s = ActionSensitivityFromPreds(
+            std::span<const float>(static_cast<const float*>(a.ptr), static_cast<size_t>(a.size)),
+            std::span<const float>(static_cast<const float*>(b.ptr), static_cast<size_t>(b.size)),
+            mse);
+        py::dict d;
+        d["div"] = s.div;
+        d["mse"] = s.mse;
+        d["act"] = s.act;
+        return d;
+    }, py::arg("pred1"), py::arg("pred2"), py::arg("mse"));
+    m.def("lin_r2", [](FloatArray z, FloatArray y, FloatArray zv, FloatArray yv, float ridge) {
+        const auto zb = z.request(), yb = y.request(), zvb = zv.request(), yvb = yv.request();
+        if (zb.ndim != 2 || yb.ndim != 2 || zvb.ndim != 2 || yvb.ndim != 2)
+            throw std::invalid_argument("lin_r2 z and y must be 2-D");
+        const size_t n = static_cast<size_t>(zb.shape[0]);
+        const size_t nv = static_cast<size_t>(zvb.shape[0]);
+        const size_t zd = static_cast<size_t>(zb.shape[1]);
+        const size_t yd = static_cast<size_t>(yb.shape[1]);
+        LinearR2 r;
+        {
+            py::gil_scoped_release release;
+            r = LinearR2On(
+                std::span<const float>(static_cast<const float*>(zb.ptr), n * zd),
+                std::span<const float>(static_cast<const float*>(yb.ptr), n * yd),
+                std::span<const float>(static_cast<const float*>(zvb.ptr), nv * zd),
+                std::span<const float>(static_cast<const float*>(yvb.ptr), nv * yd),
+                n, nv, zd, yd, ridge);
+        }
+        py::dict d;
+        d["min"] = r.min;
+        d["mean"] = r.mean;
+        d["r2"] = VectorToArray(r.r2);
+        return d;
+    }, py::arg("z"), py::arg("y"), py::arg("z_val"), py::arg("y_val"), py::arg("ridge") = 1e-4f);
+    m.def("rollout_error_from_codes", [](FloatArray z_pred, FloatArray z_true) {
+        const auto a = z_pred.request(), b = z_true.request();
+        if (a.ndim != 3 || b.ndim != 3)
+            throw std::invalid_argument("rollout_error codes must be 3-D (W, H+1, code)");
+        const size_t w = static_cast<size_t>(a.shape[0]);
+        const size_t h1 = static_cast<size_t>(a.shape[1]);
+        const size_t c = static_cast<size_t>(a.shape[2]);
+        RolloutError r;
+        {
+            py::gil_scoped_release release;
+            r = RolloutErrorFromCodes(
+                std::span<const float>(static_cast<const float*>(a.ptr), w * h1 * c),
+                std::span<const float>(static_cast<const float*>(b.ptr), w * h1 * c),
+                w, h1, c);
+        }
+        py::dict d;
+        d["error"] = VectorToArray(r.error);
+        d["baseline"] = VectorToArray(r.baseline);
+        d["ratio"] = VectorToArray(r.ratio);
+        return d;
+    }, py::arg("z_pred"), py::arg("z_true"));
 }
