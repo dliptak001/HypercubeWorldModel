@@ -45,9 +45,10 @@ struct LinearR2
     std::vector<float> r2;   // per target dimension
 };
 
-/// Per-dimension val R² of a linear map z → y, fit by SGD (bias plus
-/// weights, no regulariser). @p z / @p y are train; @p z_val / @p y_val
-/// are val.
+/// Per-dimension val R² of a least-squares map z → y (bias plus weights,
+/// no regulariser). Rank-deficient z (action codes, RankMe ≪ z_dim) is
+/// solved by column-pivoted QR; free columns get weight 0. @p z / @p y
+/// are train; @p z_val / @p y_val are val.
 [[nodiscard]] LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
                                   std::span<const float> z_val, std::span<const float> y_val,
                                   size_t train_count, size_t val_count,

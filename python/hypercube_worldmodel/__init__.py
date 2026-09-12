@@ -1041,7 +1041,11 @@ def action_sensitivity(z, predict, encode_action, act_dim, mse, rng, n=4000):
 
 
 def lin_r2(z, y, z_val, y_val):
-    """Per-dimension val R² of a linear map z → y. Returns min, mean, r2."""
+    """Per-dimension val R² of a least-squares map z → y (bias plus weights).
+
+    Returns min, mean, and the per-dimension ``r2`` array. Rank-deficient
+    codes are solved on the column span; unused weights are 0.
+    """
     y = np.asarray(y, np.float32)
     yv = np.asarray(y_val, np.float32)
     if y.ndim == 1:

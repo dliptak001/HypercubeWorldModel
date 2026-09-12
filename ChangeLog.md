@@ -1,6 +1,7 @@
 # HypercubeWorldModel - Change Log
 
 ## Unreleased
+- linR2 is least squares, not SGD. LinearR2On / hw.lin_r2 fit ŷ = Wz + b by column-pivoted QR (stdlib, no regulariser). Rank-deficient codes (action RankMe ≪ z_dim) are solved on the column span.
 - Head constructor takes lr_decay_epochs (was Config-only, always 0 from Python).
 - WorldModelConfig.action_encoder is a full EncoderConfig (dim must equal k). Create no longer copies the view knobs silently when dim is set. HWM1 file version 3 writes the action encoder knobs; v1/v2 Load still synthesizes them from the view encoder. Python WorldModel takes encoder= and action_encoder= dicts. dim 0 on action_encoder remains the SDK copy-view shorthand.
 - Hot-path buffers: Head keeps one packed-cube scratch; PlanCost walks the rollout in place (O(code) extra, not O(B·H·code)). VectorModel::Rollout encodes into its action_codes_ member. Python fit gathers each batch into a reused workspace. Inference methods take optional out= (C-contiguous writeable float32 of the result shape; same object returned).

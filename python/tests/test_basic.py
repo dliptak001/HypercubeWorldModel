@@ -664,3 +664,44 @@ def test_metrics_on_toy_batch():
     obs_ep[:, 0] = obs[:2]
     re = hw.rollout_error(vm, obs_ep, act_ep, 2, 2, rng)
     assert re["ratio"].shape == (2,)
+
+
+def _ols_r2(z_tr, y_tr, z_va, y_va):
+    Z = np.concatenate([z_tr.astype(np.float64), np.ones((len(z_tr), 1))], 1)
+    Zv = np.concatenate([z_va.astype(np.float64), np.ones((len(z_va), 1))], 1)
+    y_tr = np.asarray(y_tr, np.float64)
+    y_va = np.asarray(y_va, np.float64)
+    beta, *_ = np.linalg.lstsq(Z, y_tr, rcond=None)
+    pred = Zv @ beta
+    r2 = np.empty(y_va.shape[1], np.float64)
+    for k in range(y_va.shape[1]):
+        sse = np.sum((pred[:, k] - y_va[:, k]) ** 2)
+        sst = np.sum((y_va[:, k] - y_va[:, k].mean()) ** 2)
+        r2[k] = 1.0 - sse / max(sst, 1e-12)
+    return r2
+
+
+def test_lin_r2_matches_least_squares():
+    rng = np.random.default_rng(1)
+    n, zd, yd = 400, 8, 3
+    z = rng.normal(size=(n, zd)).astype(np.float32)
+    W = rng.normal(size=(zd, yd))
+    b = rng.normal(size=(yd,))
+    y = (z.astype(np.float64) @ W + b + 0.05 * rng.normal(size=(n, yd))).astype(np.float32)
+    split = 300
+    got = hw.lin_r2(z[:split], y[:split], z[split:], y[split:])
+    r2 = _ols_r2(z[:split], y[:split], z[split:], y[split:])
+    assert got["r2"].shape == (yd,)
+    assert abs(float(got["min"]) - float(r2.min())) < 1e-4
+    assert abs(float(got["mean"]) - float(r2.mean())) < 1e-4
+
+
+def test_lin_r2_rank_deficient():
+    rng = np.random.default_rng(2)
+    n, d, k = 300, 16, 2
+    s = rng.normal(size=(n, k))
+    z = (s @ rng.normal(size=(k, d))).astype(np.float32)
+    y = s.astype(np.float32)
+    split = 220
+    got = hw.lin_r2(z[:split], y[:split], z[split:], y[split:])
+    assert float(got["min"]) > 0.999

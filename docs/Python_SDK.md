@@ -463,7 +463,7 @@ this package.
 hw.no_change_mse(z, zn)
 hw.one_step_ratio(mse, z, zn)
 hw.action_sensitivity(z, predict, encode_action, act_dim, mse, rng)
-hw.lin_r2(z, y, z_val, y_val)   # train/val z, y must match in rows and width
+hw.lin_r2(z, y, z_val, y_val)   # least-squares z→y; train/val rows and width must match
 hw.rollout_error(vm, obs_ep, act_ep, H, windows, rng)
 ```
 

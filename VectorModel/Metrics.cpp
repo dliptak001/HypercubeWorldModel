@@ -4,6 +4,7 @@
 #include "Metrics.h"
 #include "VectorModel.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -97,6 +98,131 @@ ActionSensitivity MeasureActionSensitivity(VectorModel& vm, std::span<const floa
     return ActionSensitivityFromPreds(p1, p2, mse);
 }
 
+namespace {
+
+// Least-squares [Z 1] W ≈ Y. Column-pivoted modified Gram-Schmidt so a
+// rank-deficient Z (typical action codes) still yields the OLS fit on
+// the column span; unused columns get weight 0. W is z_dim × y_dim,
+// b is the affine term.
+void LeastSquaresWithBias(std::span<const float> z, std::span<const float> y,
+                          size_t n, size_t z_dim, size_t y_dim,
+                          std::vector<double>& w, std::vector<double>& b)
+{
+    const size_t p = z_dim + 1;
+    std::vector<double> X(n * p);
+    for (size_t i = 0; i < n; ++i)
+    {
+        for (size_t j = 0; j < z_dim; ++j)
+            X[i * p + j] = static_cast<double>(z[i * z_dim + j]);
+        X[i * p + z_dim] = 1.0;
+    }
+
+    std::vector<double> energy(p, 0.0);
+    for (size_t j = 0; j < p; ++j)
+        for (size_t i = 0; i < n; ++i)
+            energy[j] += X[i * p + j] * X[i * p + j];
+    double max_energy = 0.0;
+    for (size_t j = 0; j < p; ++j)
+        if (energy[j] > max_energy)
+            max_energy = energy[j];
+    const double tol = 1e-12 * (max_energy > 0.0 ? max_energy : 1.0);
+
+    std::vector<size_t> perm(p);
+    for (size_t j = 0; j < p; ++j)
+        perm[j] = j;
+    std::vector<double> R(p * p, 0.0);
+    size_t rank = 0;
+    for (size_t k = 0; k < p; ++k)
+    {
+        size_t jmax = k;
+        for (size_t j = k + 1; j < p; ++j)
+            if (energy[j] > energy[jmax])
+                jmax = j;
+        if (energy[jmax] < tol)
+            break;
+        if (jmax != k)
+        {
+            for (size_t i = 0; i < n; ++i)
+                std::swap(X[i * p + k], X[i * p + jmax]);
+            std::swap(energy[k], energy[jmax]);
+            std::swap(perm[k], perm[jmax]);
+            for (size_t t = 0; t < k; ++t)
+                std::swap(R[t * p + k], R[t * p + jmax]);
+        }
+        for (size_t t = 0; t < k; ++t)
+        {
+            double dot = 0.0;
+            for (size_t i = 0; i < n; ++i)
+                dot += X[i * p + t] * X[i * p + k];
+            R[t * p + k] += dot;
+            for (size_t i = 0; i < n; ++i)
+                X[i * p + k] -= dot * X[i * p + t];
+        }
+        double nrm2 = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            nrm2 += X[i * p + k] * X[i * p + k];
+        const double nrm = std::sqrt(nrm2);
+        if (!(nrm > 0.0) || nrm2 < tol)
+            break;
+        R[k * p + k] = nrm;
+        for (size_t i = 0; i < n; ++i)
+            X[i * p + k] /= nrm;
+        for (size_t j = k + 1; j < p; ++j)
+        {
+            double dot = 0.0;
+            for (size_t i = 0; i < n; ++i)
+                dot += X[i * p + k] * X[i * p + j];
+            R[k * p + j] = dot;
+            for (size_t i = 0; i < n; ++i)
+                X[i * p + j] -= dot * X[i * p + k];
+            double e = 0.0;
+            for (size_t i = 0; i < n; ++i)
+                e += X[i * p + j] * X[i * p + j];
+            energy[j] = e;
+        }
+        rank = k + 1;
+    }
+
+    w.assign(z_dim * y_dim, 0.0);
+    b.assign(y_dim, 0.0);
+    if (rank == 0)
+        return;
+
+    std::vector<double> qty(rank * y_dim, 0.0);
+    for (size_t t = 0; t < rank; ++t)
+        for (size_t k = 0; k < y_dim; ++k)
+        {
+            double s = 0.0;
+            for (size_t i = 0; i < n; ++i)
+                s += X[i * p + t] * static_cast<double>(y[i * y_dim + k]);
+            qty[t * y_dim + k] = s;
+        }
+
+    std::vector<double> wp(rank * y_dim, 0.0);
+    for (size_t k = 0; k < y_dim; ++k)
+        for (size_t t = rank; t-- > 0;)
+        {
+            double s = qty[t * y_dim + k];
+            for (size_t j = t + 1; j < rank; ++j)
+                s -= R[t * p + j] * wp[j * y_dim + k];
+            wp[t * y_dim + k] = s / R[t * p + t];
+        }
+
+    for (size_t t = 0; t < rank; ++t)
+    {
+        const size_t col = perm[t];
+        for (size_t k = 0; k < y_dim; ++k)
+        {
+            if (col == z_dim)
+                b[k] = wp[t * y_dim + k];
+            else
+                w[col * y_dim + k] = wp[t * y_dim + k];
+        }
+    }
+}
+
+} // namespace
+
 LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
                     std::span<const float> z_val, std::span<const float> y_val,
                     size_t train_count, size_t val_count,
@@ -109,33 +235,8 @@ LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
     if (z_val.size() != val_count * z_dim || y_val.size() != val_count * y_dim)
         throw std::invalid_argument("LinearR2On val z/y length");
 
-    std::vector<double> w(z_dim * y_dim, 0.0), b(y_dim, 0.0);
-    for (size_t i = 0; i < train_count; ++i)
-        for (size_t k = 0; k < y_dim; ++k)
-            b[k] += static_cast<double>(y[i * y_dim + k]);
-    const double n = static_cast<double>(train_count);
-    for (size_t k = 0; k < y_dim; ++k)
-        b[k] /= n;
-
-    constexpr int kEpochs = 40;
-    constexpr double kLr = 0.05;
-    for (int e = 0; e < kEpochs; ++e)
-    {
-        for (size_t i = 0; i < train_count; ++i)
-        {
-            const float* zi = z.data() + i * z_dim;
-            for (size_t k = 0; k < y_dim; ++k)
-            {
-                double pred = b[k];
-                for (size_t j = 0; j < z_dim; ++j)
-                    pred += w[j * y_dim + k] * static_cast<double>(zi[j]);
-                const double err = pred - static_cast<double>(y[i * y_dim + k]);
-                b[k] -= kLr * err;
-                for (size_t j = 0; j < z_dim; ++j)
-                    w[j * y_dim + k] -= kLr * err * static_cast<double>(zi[j]);
-            }
-        }
-    }
+    std::vector<double> w, b;
+    LeastSquaresWithBias(z, y, train_count, z_dim, y_dim, w, b);
 
     std::vector<double> pred(val_count * y_dim, 0.0);
     for (size_t i = 0; i < val_count; ++i)

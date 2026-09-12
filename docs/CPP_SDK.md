@@ -429,7 +429,7 @@ here.
 NoChangeMse(z, zn);
 OneStepRatio(mse, z, zn);
 MeasureActionSensitivity(*vm, z, count, mse, seed);   // samples in action bounds if set
-LinearR2On(z, y, z_val, y_val, train_n, val_n, z_dim, y_dim);
+LinearR2On(z, y, z_val, y_val, train_n, val_n, z_dim, y_dim);  // least-squares z→y
 RolloutErrorFromCodes(z_pred, z_true, windows, path_len, code_size);  // path_len is H+1
 ```
 
