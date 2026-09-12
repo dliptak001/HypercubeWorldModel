@@ -203,7 +203,7 @@ class WorldModel:
     lr, lr_min_frac, lr_decay_epochs, restore_best, beta1, beta2, eps
         Adam and cosine schedule for the Predictor, as in the sibling
         packages: lr finite > 0; lr_min_frac in [0, 1]; betas in [0, 1);
-        eps finite > 0.
+        eps finite > 0. restore_best defaults True.
 
     Notes
     -----
@@ -234,7 +234,7 @@ class WorldModel:
         lr: float = 5e-3,
         lr_min_frac: float = 1.0,
         lr_decay_epochs: int = 0,
-        restore_best: bool = False,
+        restore_best: bool = True,
         beta1: float = 0.9,
         beta2: float = 0.999,
         eps: float = 1e-8,
@@ -502,9 +502,14 @@ class WorldModel:
         """Code length, 2**k; also the action picture length."""
         return int(self._core.code_size)
 
+    def config(self) -> dict:
+        """Constructor knobs. ``passes`` is as given (0 stays 0); ``z_max`` is resolved."""
+        return dict(self._core.config())
+
     @property
     def passes(self) -> int:
-        """Resolved passes per view episode (0 in the constructor becomes N)."""
+        """Passes as given to the constructor. 0 stays 0; the view encoder
+        still runs a full tour of N internally."""
         return int(self._core.passes)
 
     @property
@@ -637,6 +642,7 @@ class Decoder:
         Weight draw.
     lr, lr_min_frac, lr_decay_epochs, restore_best, beta1, beta2, eps
         Adam and cosine schedule, as for :class:`WorldModel`.
+        restore_best defaults True.
 
     Notes
     -----
@@ -657,7 +663,7 @@ class Decoder:
         lr: float = 5e-3,
         lr_min_frac: float = 1.0,
         lr_decay_epochs: int = 0,
-        restore_best: bool = False,
+        restore_best: bool = True,
         beta1: float = 0.9,
         beta2: float = 0.999,
         eps: float = 1e-8,
@@ -1050,7 +1056,8 @@ class Head:
         self._core.fit(z, y, za_a, int(epochs), int(batch))
         return self
 
-    def __call__(self, z, za=None):
+    def predict(self, z, za=None):
+        """One scalar per code. ``z`` is ``(code_size,)`` or ``(count, code_size)``."""
         z = _f32(z)
         one = z.ndim == 1
         if one:
@@ -1058,8 +1065,11 @@ class Head:
         za_a = None if za is None else _f32(za)
         if za_a is not None and za_a.ndim == 1:
             za_a = za_a.reshape(1, -1)
-        out = self._core.apply(z, za_a)
+        out = self._core.predict(z, za_a)
         return out[0] if one else out
+
+    def __call__(self, z, za=None):
+        return self.predict(z, za)
 
     def score(self, z, y, za=None):
         z = _f32(z)
@@ -1071,14 +1081,16 @@ class Head:
             za_a = za_a.reshape(1, -1)
         return self._core.score(z, y, za_a)
 
-    def plan_cost(self):
-        def cost(zs, goal_z=None):
-            zs = _f32(zs)
-            if zs.ndim != 3:
-                raise ValueError("plan_cost zs must be (B, H+1, code)")
-            return self._core.plan_cost(zs)
+    def plan_cost(self, zs):
+        """Planner cost: sum of predicted y over the rollout excluding z0.
 
-        return cost
+        ``zs`` is ``(B, H+1, code)``. Returns ``(B,)``. Negated for a
+        reward head so a planner always minimises.
+        """
+        zs = _f32(zs)
+        if zs.ndim != 3:
+            raise ValueError("plan_cost zs must be (B, H+1, code)")
+        return self._core.plan_cost(zs)
 
     def state(self):
         cfg = self._core
@@ -1119,9 +1131,9 @@ class VectorModel:
     """WorldModel plus optional normalisers, PaintStripes, raw-action rollout.
 
     Always paints with paint_stripes. encode / encode_action take raw vectors.
-    rollout takes raw actions. Named Heads and optional action bounds live here.
-    obs_norm, act_norm, and heads are copies; set_head / the C++ setters
-    put a fitted object back.
+    rollout takes raw actions. fit trains the underlying WorldModel.
+    Named Heads and optional action bounds live here. obs_norm, act_norm,
+    and heads are copies; set_head / the C++ setters put a fitted object back.
     """
 
     def __init__(self, wm, obs_norm=None, act_norm=None,
@@ -1152,11 +1164,28 @@ class VectorModel:
 
     @property
     def wm(self) -> WorldModel:
+        """Underlying WorldModel: encoder scales, replica weights, HWM1 save."""
         return self._wm
 
     @property
     def latent_dim(self) -> int:
         return int(self._wm.code_size)
+
+    @property
+    def code_size(self) -> int:
+        return int(self._wm.code_size)
+
+    @property
+    def dim(self) -> int:
+        return int(self._wm.dim)
+
+    @property
+    def k(self) -> int:
+        return int(self._wm.k)
+
+    @property
+    def N(self) -> int:
+        return int(self._wm.N)
 
     @property
     def obs_norm(self):
@@ -1236,6 +1265,35 @@ class VectorModel:
             raise ValueError(f"act last-dim {ad} != act_dim {have}")
         out = self._core.rollout(zz, aa)
         return out[0] if one else out
+
+    def fit(self, z, za, z_next, **kwargs) -> "VectorModel":
+        """Train the Predictor. Same arguments as :meth:`WorldModel.fit`."""
+        self._wm.fit(z, za, z_next, **kwargs)
+        return self
+
+    def evaluate(self, z, za, z_next) -> float:
+        return self._wm.evaluate(z, za, z_next)
+
+    def begin_batch(self) -> None:
+        self._wm.begin_batch()
+
+    def accumulate(self, z, za, z_next) -> float:
+        return self._wm.accumulate(z, za, z_next)
+
+    def end_batch(self) -> None:
+        self._wm.end_batch()
+
+    def set_epoch(self, epoch: int, num_epochs: int = 0) -> None:
+        self._wm.set_epoch(epoch, num_epochs)
+
+    def observe(self, metric: float, epoch: int) -> None:
+        self._wm.observe(metric, epoch)
+
+    def restore_best(self) -> None:
+        self._wm.restore_best()
+
+    def reset_training(self) -> None:
+        self._wm.reset_training()
 
     def cost(self, zs, goal_z=None):
         if self._cost is not None:

@@ -490,6 +490,7 @@ def test_head_toy_readout():
     y = z[:, 0].copy()
     h = hw.Head(sign="cost").fit(z, y, epochs=40, batch=16)
     assert h.score(z, y)["r2"] > 0.7
+    np.testing.assert_array_equal(h.predict(z), h(z))
     with pytest.raises(ValueError):
         h(z, z)
 
@@ -506,10 +507,10 @@ def test_head_za_optional_and_plan_cost():
         h(z)
     h2 = hw.Head(sign="reward").fit(z, z[:, 0], epochs=20, batch=8)
     zs = rng.standard_normal((3, 5, 16)).astype(np.float32)
-    c = h2.plan_cost()(zs)
+    c = h2.plan_cost(zs)
     assert c.shape == (3,)
     h3 = hw.Head(sign="cost").fit(z, z[:, 0], epochs=20, batch=8)
-    assert np.allclose(h3.plan_cost()(zs), -c, atol=1e-5)
+    assert np.allclose(h3.plan_cost(zs), -c, atol=1e-5)
 
 
 def test_head_auc_binary_and_ties():
@@ -533,6 +534,8 @@ def test_vector_model_encode_rollout_and_capacity():
     obs, act, nxt = plane(8)
     z = vm.encode(obs)
     za = vm.encode_action(act)
+    zn = vm.encode(nxt)
+    vm.fit(z, za, zn, epochs=1, batch_size=8)
     assert z.shape == (8, wm.code_size)
     path = vm.rollout(z[0], act[:3])
     assert path.shape == (4, wm.code_size)

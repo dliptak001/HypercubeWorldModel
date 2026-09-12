@@ -638,10 +638,10 @@ PYBIND11_MODULE(_core, m)
                      epochs, batch, za_span);
         }, py::arg("z"), py::arg("y"), py::arg("za") = py::none(),
             py::arg("epochs") = 40, py::arg("batch") = 32)
-        .def("apply", [](const Head& self, FloatArray z, std::optional<FloatArray> za) {
+        .def("predict", [](const Head& self, FloatArray z, std::optional<FloatArray> za) {
             const auto zb = z.request();
             if (zb.ndim != 2)
-                throw std::invalid_argument("Head.apply z must be 2-D (count, code)");
+                throw std::invalid_argument("Head.predict z must be 2-D (count, code)");
             const size_t count = static_cast<size_t>(zb.shape[0]);
             const size_t code = static_cast<size_t>(zb.shape[1]);
             std::span<const float> za_span{};

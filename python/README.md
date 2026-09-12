@@ -417,8 +417,9 @@ VectorModel.
   you paint your own fields.
 - **Frozen encoders.** Codes depend only on the field and the seeds;
   encode a stream once, train on it many times.
-- **fit.** Shuffle, batch, cosine schedule, restore-best with an
-  optional validation set, in one call.
+- **fit.** Shuffle, batch, cosine schedule, restore-best (on by
+  default) with an optional validation set, in one call. VectorModel.fit
+  trains the WorldModel it wraps.
 - **Custom loops.** begin_batch, accumulate, end_batch, set_epoch,
   observe, restore_best, exposed one to one with the C++ API.
 - **Batched by shape.** Every method takes one row or many and returns

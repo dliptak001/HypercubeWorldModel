@@ -296,7 +296,7 @@ wm = hw.WorldModel(
 | lr | float | Adam step size and cosine peak. Finite, > 0. |
 | lr_min_frac | float | Cosine floor as a fraction of lr, in [0, 1]; 1 is a constant rate. |
 | lr_decay_epochs | int | Cosine horizon; 0 uses the epochs given to fit or set_epoch. |
-| restore_best | bool | Snapshot the Predictor weights on a new low observed metric; fit restores at the end. |
+| restore_best | bool | Snapshot the Predictor weights on a new low observed metric; fit restores at the end. Default True. |
 | beta1, beta2 | float | Adam moment decays, in [0, 1). |
 | eps | float | Adam denominator floor. Finite, > 0. |
 
@@ -340,7 +340,7 @@ shape. The loop over rows runs in C++ with the GIL released.
 |----------|---------|
 | dim, k | Geometry as given |
 | N, code_size | 2ᵈⁱᵐ and 2ᵏ |
-| passes, action_passes | Resolved passes per view episode and per action episode |
+| passes, action_passes | passes is as given (0 stays 0). action_passes is the action encoder's resolved T (0 becomes 2ᵏ) |
 | z_max | Resolved Predictor depth (0 already replaced by k+1) |
 | view_output_scale, action_output_scale | Encoder presentation gains in effect |
 | num_weights | Predictor weights: 2ᵏ⁺¹ × (k+1) × gather_span × z_max |
@@ -421,8 +421,9 @@ VectorModel always paints with paint_stripes. CEM is not in the package.
 n = hw.Normaliser.fit(x, clip=3.0)          # x: (count, d) -> values in [-1, 1]
 h = hw.Head(sign="cost")                    # LCN on the code cube
 h.fit(z, y)                                 # za omitted is the default
+yhat = h.predict(z)                         # one scalar per code; h(z) is the same
 s = h.score(z, y)                           # dict: r2; auc only if y is strictly 0/1
-# h.plan_cost()(zs)                         # (B,) sum excluding z0, signed
+c = h.plan_cost(zs)                         # (B,) sum excluding z0, signed
 
 vm = hw.VectorModel(wm, obs_norm=n, action_low=lo, action_high=hi,
                     heads={"dist2": h})
@@ -430,6 +431,7 @@ vm.set_obs_dim(obs_dim)
 vm.set_act_dim(act_dim)
 z = vm.encode(obs)                          # optional norm, paint onto N, wm.encode
 za = vm.encode_action(a)
+vm.fit(z, za, zn, epochs=...)               # trains the WorldModel
 path = vm.rollout(z0, actions)              # raw (H, act_dim) or (B, H, act_dim)
 c = vm.cost(zs, goal_z)                     # attached Head, or L2 of last code to goal
 vm.set_head("dist2", h)                     # rejects an unfitted Head
@@ -532,7 +534,7 @@ Typical mistakes:
 | Two actions give the same prediction | The Predictor may be ignoring E(a); raise the action encoder's output_scale, and check that one view code with different action codes gives different predictions |
 | A code changed between runs | It cannot; the encoders are frozen. Check the field, or the seeds |
 | Second fit behaves oddly | reset_training first; Adam moments and step count persist |
-| restore_best did nothing | restore_best must be True, and observe must have seen a finite, lower metric |
+| restore_best did nothing | restore_best defaults on; Observe must have seen a finite, lower metric |
 | decode output is nonsense | fit_input_scale was skipped, or was fitted on other codes; it is one constant and it is saved with the weights |
 | Weights load rejected | The length must equal num_weights: same k, z_max, and gather_span |
 

@@ -54,7 +54,7 @@ model = hw.VectorModel(wm, action_low=PlaneWorld.action_low,
 z = model.encode(obs)
 za = model.encode_action(act)
 zn = model.encode(nxt)
-wm.fit(z, za, zn, epochs=150, batch_size=16)
+model.fit(z, za, zn, epochs=150, batch_size=16)
 
 
 # ── Cross-entropy method with a warm start ──
