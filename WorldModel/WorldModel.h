@@ -59,11 +59,6 @@ struct WorldModelConfig
     /// encoder.dim; the action encoder needs k >= 5. Predictor cube is k+1.
     size_t k = 6;
 
-    /// Multiplier on E(a) as it is laid onto the extra bit-face in Pack.
-    /// The stored action code is untouched; only what P sees is scaled.
-    /// Use it to bring E(a) to the same level as E(x). Finite, > 0.
-    float action_scale = 0.5f;
-
     WorldModelPredictorConfig predictor{};
 };
 
@@ -77,9 +72,11 @@ struct WorldModelConfig
 /// of this object.
 ///
 /// The Predictor cube is k+1. Pack concatenates two length-2^k codes:
-/// E(x) on the first subcube, E(a) on the extra bit-face. Return and
-/// loss are the first subcube only (length 2^k). How the caller paints
-/// the action field is not this class's job.
+/// E(x) on the first subcube, E(a) on the extra bit-face. Loudness is
+/// each Encoder's output_scale, applied when Encode / EncodeAction
+/// return, not at Pack. Return and loss are the first subcube only
+/// (length 2^k). How the caller paints the action field is not this
+/// class's job.
 ///
 /// ```
 ///   wm.Encode(x, z);                      // x: FieldSize(); z: CodeSize()
@@ -116,8 +113,7 @@ public:
 
     /// @brief Validate @p cfg, build both Encoders and the Predictor.
     /// @throws std::invalid_argument if k is not in [5, encoder.dim),
-    ///         if action_scale is not finite and > 0, or if Encoder /
-    ///         Predictor reject their fields.
+    ///         or if Encoder / Predictor reject their fields.
     static std::unique_ptr<WorldModel> Create(const WorldModelConfig& cfg);
 
     /// @brief Read a WorldModel written by @ref Save.
@@ -148,10 +144,24 @@ public:
     ///         or @p dst is not CodeSize() long.
     const float* Encode(std::span<const float> field, std::span<float> dst);
 
-    /// Full encoder episode from the most recent Encode. Length FieldSize().
-    /// Valid until the next Encode.
+    /// Scaled full view episode from the most recent Encode. Length
+    /// FieldSize(). Valid until the next Encode. The k-face Encode
+    /// wrote is the first CodeSize() of this cube.
     /// @throws std::invalid_argument if Encode has not been called.
     [[nodiscard]] const float* LastCube() const;
+
+    /// Unscaled full view episode from the most recent Encode. Length
+    /// FieldSize(). Valid until the next Encode. The raw k-face is the
+    /// first CodeSize() of this cube.
+    /// @throws std::invalid_argument if Encode has not been called.
+    [[nodiscard]] const float* LastRawCube() const;
+
+    /// Packed Predictor input from the most recent Predict or
+    /// Accumulate: E(x) then E(a), length 2 * CodeSize(). The two Pack
+    /// halves are [0, CodeSize) and [CodeSize, 2 * CodeSize).
+    /// @throws std::invalid_argument if neither Predict nor Accumulate
+    ///         has been called.
+    [[nodiscard]] const float* LastPacked() const;
 
     /// @brief Frozen action encode on the k-cube. @p field is one action
     /// field, length CodeSize(). Writes the whole k-cube output, E(a),
@@ -182,7 +192,7 @@ public:
     void Rollout(std::span<const float> z0, std::span<const float> actions,
                  std::span<float> out);
 
-    /// @brief Concatenate two k-faces: E(x) then action_scale * E(a).
+    /// @brief Concatenate two k-faces: E(x) then E(a).
     /// @p dst is length 2 * CodeSize(). Const and touches no member
     /// buffer, so threads may call it concurrently, each into its own
     /// dst; replica Predictors feed on it (see WorldModelTest).
@@ -256,6 +266,21 @@ public:
     /// The action encoder's resolved config: cfg.encoder with dim = k.
     [[nodiscard]] EncoderConfig ActionEncoderConfig() const;
 
+    [[nodiscard]] float ViewOutputScale() const;
+    [[nodiscard]] float ActionOutputScale() const;
+    void SetViewOutputScale(float scale);
+    void SetActionOutputScale(float scale);
+
+    /// @brief Scale that would bring already-run **raw** view codes to
+    /// RMS @p target_rms. Does not change the Encoder. @p z is one
+    /// k-face or many concatenated.
+    [[nodiscard]] float SuggestViewOutputScale(std::span<const float> z,
+                                               float target_rms = 1.f) const;
+    [[nodiscard]] float SuggestActionOutputScale(std::span<const float> za,
+                                                 float target_rms = 1.f) const;
+    void FitViewOutputScale(std::span<const float> z, float target_rms = 1.f);
+    void FitActionOutputScale(std::span<const float> za, float target_rms = 1.f);
+
     [[nodiscard]] float RealizedSpectralRadius() const;
     [[nodiscard]] float ActionRealizedSpectralRadius() const;
 
@@ -269,4 +294,5 @@ private:
     std::unique_ptr<Predictor> pred_;
     std::vector<float> packed_;
     const float* last_cube_ = nullptr;
+    bool has_packed_ = false;
 };

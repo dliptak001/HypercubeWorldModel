@@ -12,10 +12,12 @@
 
 /// @brief Construction-time parameters for @ref Encoder.
 ///
-/// All fields are fixed at @ref Encoder::Create. Dynamics (state, history,
-/// staged drive) are not part of this struct. @ref Config returns an
-/// equivalent snapshot; @c spectral_radius is the **target** used for the
-/// recurrent rescale, not the realized estimate.
+/// All fields except @c output_scale are fixed at @ref Encoder::Create.
+/// @c output_scale is the Create default; SetOutputScale / FitOutputScale
+/// may change it. Dynamics (state, history, staged drive) are not part
+/// of this struct. @ref Config returns an equivalent snapshot;
+/// @c spectral_radius is the **target** used for the recurrent rescale,
+/// not the realized estimate.
 struct EncoderConfig
 {
     /// Hypercube dimension; neuron count N = 2^dim. Valid range **[5, 24]**.
@@ -41,7 +43,29 @@ struct EncoderConfig
 
     /// Seed for the episode start state s0. Separate from @c seed (weights).
     uint64_t ic_seed = 1;
+
+    /// Presentation gain on the cube @ref Encoder::RunEpisode returns.
+    /// Finite, > 0. Default 1: the returned slice equals the raw delay
+    /// line. Does not enter Step. @ref Encoder::SetOutputScale /
+    /// @ref Encoder::FitOutputScale may change it after Create.
+    float output_scale = 1.f;
 };
+
+/// @brief Mean of absolute values. Empty span is 0.
+[[nodiscard]] float MeanAbs(std::span<const float> x);
+
+/// @brief Root-mean-square. Empty span is 0.
+[[nodiscard]] float Rms(std::span<const float> x);
+
+/// @brief Scale that would bring @p raw to RMS @p target_rms.
+///
+/// Returns target_rms / rms(raw). Default target 1. Measures the
+/// values as given; pass an unscaled cube or k-face.
+/// @throws std::invalid_argument if @p raw is empty or all zero, if
+///         it contains a non-finite, or if @p target_rms is not
+///         finite and > 0.
+[[nodiscard]] float SuggestedOutputScale(std::span<const float> raw,
+                                         float target_rms = 1.f);
 
 /// @brief Frozen hypercube encoder: one field in, one episode, N floats out.
 ///
@@ -65,8 +89,9 @@ public:
     /// @brief Validate @p cfg, allocate, draw weights, rescale recurrent SR.
     /// @throws std::invalid_argument if dim is not in [5, 24],
     ///         spectral_radius is not finite and > 0, leak_rate is not
-    ///         finite and in (0, 1], input_scaling is not finite, or
-    ///         history_depth is not in [1, 64].
+    ///         finite and in (0, 1], input_scaling is not finite,
+    ///         output_scale is not finite and > 0, or history_depth is
+    ///         not in [1, 64].
     static std::unique_ptr<Encoder> Create(const EncoderConfig& cfg)
     {
         return std::unique_ptr<Encoder>(new Encoder(cfg));
@@ -82,9 +107,52 @@ public:
     /// Loads s0 into the delay line, sets the pass counter c to 0, then for
     /// T passes drives vertex v with x[(v XOR c) AND (N-1)], steps, and
     /// increments c. @p x is not modified. The returned pointer is the
-    /// newest slice, N floats, valid until the next RunEpisode.
+    /// newest slice times @ref OutputScale, N floats, valid until the
+    /// next RunEpisode. The delay line is not scaled.
     /// @throws std::invalid_argument if @p x is not length N.
     const float* RunEpisode(std::span<const float> x);
+
+    /// Unscaled newest delay-line slice from the most recent
+    /// @ref RunEpisode. N floats, valid until the next RunEpisode.
+    /// @throws std::invalid_argument if RunEpisode has not been called.
+    [[nodiscard]] const float* RawCube() const;
+
+    /// Scaled newest slice from the most recent @ref RunEpisode
+    /// (the same pointer RunEpisode returned). N floats, valid until
+    /// the next RunEpisode.
+    /// @throws std::invalid_argument if RunEpisode has not been called.
+    [[nodiscard]] const float* ScaledCube() const;
+
+    /// @brief Scale that would bring the last raw cube to RMS @p target_rms.
+    /// Does not change @ref OutputScale.
+    /// @throws std::invalid_argument if RunEpisode has not been called,
+    ///         or if @p target_rms is not finite and > 0.
+    [[nodiscard]] float SuggestOutputScale(float target_rms = 1.f) const;
+
+    /// @brief Run each length-N field in @p fields (concatenated) and
+    /// return the scale that would bring those raw cubes to RMS
+    /// @p target_rms. Does not change @ref OutputScale. Leaves the last
+    /// field's episode in the delay line.
+    /// @throws std::invalid_argument if @p fields is empty, not a
+    ///         multiple of N, or if the raw cubes are all zero.
+    [[nodiscard]] float SuggestOutputScale(std::span<const float> fields,
+                                           float target_rms = 1.f);
+
+    /// @brief Set @ref OutputScale from @ref SuggestOutputScale on the
+    /// last raw cube. Refreshes the scaled buffer from that cube.
+    void FitOutputScale(float target_rms = 1.f);
+
+    /// @brief Set @ref OutputScale from a calibration run of @p fields.
+    void FitOutputScale(std::span<const float> fields, float target_rms = 1.f);
+
+    /// Presentation gain in effect. Finite, > 0.
+    [[nodiscard]] float OutputScale() const { return output_scale_; }
+
+    /// @brief Replace the presentation gain. Finite, > 0. If an episode
+    /// has been run, refreshes the scaled buffer from the current raw
+    /// cube. Does not rerun the episode.
+    /// @throws std::invalid_argument if @p scale is not finite and > 0.
+    void SetOutputScale(float scale);
 
     /// Number of vertices: N = 2^dim. Length of a field and of the
     /// pointer returned by @ref RunEpisode.
@@ -127,12 +195,15 @@ private:
     std::unique_ptr<float[], AlignedFree> vtx_state_;
     std::unique_ptr<float[], AlignedFree> vtx_output_history_;
     std::unique_ptr<float[], AlignedFree> vtx_weight_;
+    std::unique_ptr<float[], AlignedFree> output_scaled_;
     std::unique_ptr<float*[]> slice_ptrs_;
 
     float spectral_radius_ = 0.99f;
     float leak_rate_ = 1.0f;
     float input_scaling_ = 0.5f;
+    float output_scale_ = 1.f;
     float realized_spectral_radius_ = 0.0f;
+    bool has_episode_ = false;
     size_t history_depth_ = 1;
     size_t num_weights_ = 0;
 
@@ -148,6 +219,7 @@ private:
     void Clear();
     void LoadInitialCondition(const float* ic, size_t count);
     void HomeSlicePointers();
+    void RefreshScaledOutput();
     [[nodiscard]] float EstimateSpectralRadius(std::span<float> x, std::span<float> y) const;
 
     /// Recurrent block starts after the input block.

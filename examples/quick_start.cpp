@@ -101,7 +101,6 @@ int main()
     cfg.encoder.input_scaling = 0.8f;
     cfg.encoder.passes = 2 * kDim;
     cfg.k = kK;
-    cfg.action_scale = 0.33f;
     cfg.predictor.z_max = 3 * kK;
     cfg.predictor.gather_span = 5;
     cfg.predictor.tanh_last = true;

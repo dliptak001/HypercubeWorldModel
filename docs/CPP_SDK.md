@@ -87,7 +87,6 @@ will compile the same core the same way.
 | quick_start | The program below, compiled so this page stays true |
 | HypercubeWorldModel | Smoke test of every component |
 | WorldModelTest | Many two-sine draws through the WorldModel; [world_model_test.md](world_model_test.md) |
-| TerrainWalkerTest | A walker on an elevation map with four headings; [terrain_walker.md](terrain_walker.md) |
 | JepaEncoderTest, JepaPredictorTest, CompressionTest | Component tests; see [the root README](../README.md#tests) |
 
 Every knob in the tests is a constant at the top of a source file; there
@@ -140,7 +139,7 @@ cube of N values                      cube of 2ᵏ values
     v                                     v
 E(x), the view code ------+   +------ E(a), the action code
                           v   v
-        (k+1)-cube: E(x) on one half, action_scale × E(a) on the other
+        (k+1)-cube: E(x) on one half, E(a) on the other
                           |
                           v  Predictor, one forward pass
         2ᵏ⁺¹ outputs; the first 2ᵏ are the predicted next E(x)
@@ -183,6 +182,7 @@ struct EncoderConfig {
     size_t   history_depth;     // delay line length M; in [1, 64]
     size_t   passes;            // passes per episode T; 0 = a full tour of the cube
     uint64_t ic_seed;           // episode start state s0; separate from seed
+    float    output_scale;      // presentation gain on the returned cube; finite, > 0; default 1
 };
 
 struct LCNTrainingConfig {
@@ -206,7 +206,6 @@ struct WorldModelPredictorConfig {
 struct WorldModelConfig {
     EncoderConfig encoder;                 // the view encoder; the action encoder is the same with dim = k
     size_t   k;                            // kept face and action cube; in [5, encoder.dim)
-    float    action_scale;                 // multiplier on E(a) as the Predictor sees it; finite, > 0
     WorldModelPredictorConfig predictor;   // dim is always k+1, not a knob
 };
 ```
@@ -222,7 +221,7 @@ What the training knobs do to a run is in [predictor.md](predictor.md).
 |------|----------|
 | encoder.dim | Sized to the view. A view shorter than N goes through PaintStripes |
 | k | Chooses the code length, 2ᵏ. Smaller is more compression; the tests sweep it |
-| action_scale | Multiplier on E(a) as it is laid next to E(x) for the Predictor. Brings E(a) to the level of E(x): the whole output of a small cube runs hotter than a face cut from a big one |
+| encoder.output_scale | Presentation gain on the returned cube. Default 1. View and action encoders can be set independently after Create. |
 | predictor.z_max | Depth buys reach on the Predictor cube. 0 means k+1, antipodal reach on that cube; the tests go deeper |
 | predictor.training.lr, batch size | The gradient is a batch **sum**; scale them together |
 | predictor.training.restore_best | On for real runs; feed Observe a validation metric |
@@ -382,8 +381,7 @@ encode an action, step a code, roll a code out over a plan, and score
 the result. The SDK gives the first four and leaves the fifth to the
 caller, because scoring depends on the task and not on the model.
 
-The DeepMind Control Suite convention for a latent world model, as
-used by the latent-planning baselines, maps onto the SDK like this:
+A sampling planner maps onto the SDK like this:
 
 | Planner needs | SDK | Note |
 |---------------|-----|------|
@@ -418,15 +416,15 @@ Typical mistakes:
 | Symptom / assumption | Fix |
 |----------------------|-----|
 | Create throws on k | k must be at least 5 and strictly less than encoder.dim. So encoder.dim must be at least 6: an Encoder accepts dim 5, but a WorldModel on it has no room for a k |
-| Create throws on action_scale | It must be finite and greater than zero |
-| Create throws on an encoder float knob | spectral_radius, leak_rate, and input_scaling must be finite; a NaN from a corrupt file or an unset field lands here |
+| SetViewOutputScale / SetActionOutputScale throws | The scale must be finite and greater than zero |
+| Create throws on an encoder float knob | spectral_radius, leak_rate, and input_scaling must be finite; output_scale must be finite and > 0; a NaN from a corrupt file or an unset field lands here |
 | Throw on Encode | The field must be FieldSize() long and dst CodeSize() long |
 | Throw on EncodeAction | Both the picture and dst must be CodeSize() long; the action cube is k, not dim |
 | Throw on Rollout | actions must be a whole number of codes, and out one code longer than that |
 | Throw on PaintStripes | The source must be non-empty and no longer than the destination |
 | Loss looks huge | It is 0.5 × **sum** of squared error over the code, not a mean |
 | Loss never falls | Check the cycle order, and that BeginBatch runs per batch, not per epoch |
-| Two actions give the same prediction | The Predictor may be ignoring E(a); raise action_scale, and check that one view code with different action codes gives different predictions |
+| Two actions give the same prediction | The Predictor may be ignoring E(a); raise the action encoder's output_scale, and check that one view code with different action codes gives different predictions |
 | A code changed between runs | It cannot; the encoders are frozen. Check the field, or the config seeds |
 | Learning rate never decays | Call SetEpoch(epoch, num_epochs) each epoch; an lr_min_frac of one also means constant |
 | Second run behaves oddly | ResetTraining; Adam moments and step count persist |
@@ -483,8 +481,7 @@ continue training after Load, the schedule starts cold.
   train, each thread first LoadWeights from the WorldModel's Weights,
   then BeginBatch and Accumulate its share; afterwards the master does
   BeginBatch, AddGrad with each replica's Grad, and EndBatch. Predictor
-  is in Predictor.h; WorldModelTest and TerrainWalkerTest run this
-  recipe.
+  is in Predictor.h; WorldModelTest runs this recipe.
 - Predict and Rollout are one forward pass per step, single-threaded.
   A sampling planner issues many thousands of them per environment
   step. Batched prediction inside the library is the obvious next

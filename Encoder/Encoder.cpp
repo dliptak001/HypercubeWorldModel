@@ -22,6 +22,48 @@ static inline uint64_t mix64(uint64_t x)
     return x ^ (x >> 31);
 }
 
+static inline bool FiniteBits(float x)
+{
+    return (std::bit_cast<uint32_t>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+float MeanAbs(std::span<const float> x)
+{
+    if (x.empty())
+        return 0.f;
+    double a = 0.0;
+    for (const float v : x)
+        a += std::fabs(static_cast<double>(v));
+    return static_cast<float>(a / static_cast<double>(x.size()));
+}
+
+float Rms(std::span<const float> x)
+{
+    if (x.empty())
+        return 0.f;
+    double ss = 0.0;
+    for (const float v : x)
+        ss += static_cast<double>(v) * static_cast<double>(v);
+    return static_cast<float>(std::sqrt(ss / static_cast<double>(x.size())));
+}
+
+float SuggestedOutputScale(std::span<const float> raw, float target_rms)
+{
+    if (raw.empty())
+        throw std::invalid_argument("SuggestedOutputScale raw must not be empty");
+    if (!FiniteBits(target_rms) || !(target_rms > 0.f))
+        throw std::invalid_argument("SuggestedOutputScale target_rms must be finite and > 0");
+    for (const float v : raw)
+    {
+        if (!FiniteBits(v))
+            throw std::invalid_argument("SuggestedOutputScale raw contains a non-finite value");
+    }
+    const float rms = Rms(raw);
+    if (!(rms > 0.f))
+        throw std::invalid_argument("SuggestedOutputScale raw is all zero");
+    return target_rms / rms;
+}
+
 // Named substreams (values are part of the weight-draw ABI vs hESN roles).
 enum class SeedRole : uint64_t {
     Recurrent = 1,
@@ -42,6 +84,7 @@ Encoder::Encoder(const EncoderConfig& cfg)
       spectral_radius_(cfg.spectral_radius),
       leak_rate_(cfg.leak_rate),
       input_scaling_(cfg.input_scaling),
+      output_scale_(cfg.output_scale),
       history_depth_(cfg.history_depth),
       passes_(cfg.passes),
       ic_seed_(cfg.ic_seed)
@@ -54,15 +97,14 @@ Encoder::Encoder(const EncoderConfig& cfg)
 
     // Bit-level finiteness test: std::isfinite is unreliable under
     // -ffast-math, and a NaN passes every ordered comparison below.
-    auto finite = [](float x) {
-        return (std::bit_cast<uint32_t>(x) & 0x7f800000u) != 0x7f800000u;
-    };
-    if (!finite(spectral_radius_) || !(spectral_radius_ > 0.0f))
+    if (!FiniteBits(spectral_radius_) || !(spectral_radius_ > 0.0f))
         throw std::invalid_argument("Encoder::Create spectral_radius must be finite and positive");
-    if (!finite(leak_rate_) || !(leak_rate_ > 0.0f) || !(leak_rate_ <= 1.0f))
+    if (!FiniteBits(leak_rate_) || !(leak_rate_ > 0.0f) || !(leak_rate_ <= 1.0f))
         throw std::invalid_argument("Encoder::Create leak_rate must be finite and in (0.0, 1.0]");
-    if (!finite(input_scaling_))
+    if (!FiniteBits(input_scaling_))
         throw std::invalid_argument("Encoder::Create input_scaling must be finite");
+    if (!FiniteBits(output_scale_) || !(output_scale_ > 0.0f))
+        throw std::invalid_argument("Encoder::Create output_scale must be finite and > 0");
     if (history_depth_ < 1 || history_depth_ > 64)
         throw std::invalid_argument("Encoder::Create history_depth must be in [1, 64]");
 
@@ -73,6 +115,7 @@ Encoder::Encoder(const EncoderConfig& cfg)
     vtx_state_.reset(AllocAligned(n_));
     vtx_output_history_.reset(AllocAligned(n_ * history_depth_));
     vtx_weight_.reset(AllocAligned(num_weights_));
+    output_scaled_.reset(AllocAligned(n_));
     slice_ptrs_.reset(new float*[history_depth_]());
 
     if (passes_ == 0)
@@ -201,7 +244,9 @@ const float* Encoder::RunEpisode(std::span<const float> x)
         Step();
         ++c;
     }
-    return slice_ptrs_[0];
+    has_episode_ = true;
+    RefreshScaledOutput();
+    return output_scaled_.get();
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +329,70 @@ void Encoder::LoadInitialCondition(const float* ic, const size_t count)
 // Config / clear
 // ---------------------------------------------------------------------------
 
+const float* Encoder::RawCube() const
+{
+    if (!has_episode_)
+        throw std::invalid_argument("Encoder::RawCube requires a prior RunEpisode");
+    return slice_ptrs_[0];
+}
+
+const float* Encoder::ScaledCube() const
+{
+    if (!has_episode_)
+        throw std::invalid_argument("Encoder::ScaledCube requires a prior RunEpisode");
+    return output_scaled_.get();
+}
+
+float Encoder::SuggestOutputScale(float target_rms) const
+{
+    if (!has_episode_)
+        throw std::invalid_argument("Encoder::SuggestOutputScale requires a prior RunEpisode");
+    return SuggestedOutputScale(std::span<const float>(slice_ptrs_[0], n_), target_rms);
+}
+
+float Encoder::SuggestOutputScale(std::span<const float> fields, float target_rms)
+{
+    if (fields.empty() || fields.size() % n_ != 0)
+        throw std::invalid_argument(
+            "Encoder::SuggestOutputScale fields length must be a positive multiple of N");
+    const size_t count = fields.size() / n_;
+    std::vector<float> raw(fields.size());
+    for (size_t i = 0; i < count; ++i)
+    {
+        RunEpisode(fields.subspan(i * n_, n_));
+        std::memcpy(raw.data() + i * n_, slice_ptrs_[0], n_ * sizeof(float));
+    }
+    return SuggestedOutputScale(raw, target_rms);
+}
+
+void Encoder::FitOutputScale(float target_rms)
+{
+    SetOutputScale(SuggestOutputScale(target_rms));
+}
+
+void Encoder::FitOutputScale(std::span<const float> fields, float target_rms)
+{
+    SetOutputScale(SuggestOutputScale(fields, target_rms));
+}
+
+void Encoder::SetOutputScale(float scale)
+{
+    if (!FiniteBits(scale) || !(scale > 0.f))
+        throw std::invalid_argument("Encoder::SetOutputScale scale must be finite and > 0");
+    output_scale_ = scale;
+    if (has_episode_)
+        RefreshScaledOutput();
+}
+
+void Encoder::RefreshScaledOutput()
+{
+    const float* raw = slice_ptrs_[0];
+    float* dst = output_scaled_.get();
+    const float s = output_scale_;
+    for (size_t i = 0; i < n_; ++i)
+        dst[i] = raw[i] * s;
+}
+
 EncoderConfig Encoder::Config() const
 {
     EncoderConfig cfg;
@@ -295,6 +404,7 @@ EncoderConfig Encoder::Config() const
     cfg.history_depth = history_depth_;
     cfg.passes = passes_;
     cfg.ic_seed = ic_seed_;
+    cfg.output_scale = output_scale_;
     return cfg;
 }
 

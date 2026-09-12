@@ -1,11 +1,11 @@
-"""A planner adapter in the DeepMind Control Suite shape, on a toy world.
+"""A planner adapter on a toy world.
 
 The world is the plane point from plane_point.py with a goal: reach a
-target position. The adapter is the DMC latent-world-model protocol:
+target position. The adapter is the latent-world-model protocol:
 encode, encode_action, predict, rollout, cost, plus action_space.low /
 .high. CEM samples raw actions and calls rollout with those arrays;
 the adapter paints and encode_action's the block once, then WorldModel
-rollout on the codes. Swap the environment for a state-based suite
+rollout on the codes. Swap the environment for another state-based
 task and keep this adapter.
 
 encode_action is a full episode on the action cube. That is the hot
@@ -44,7 +44,7 @@ class PlaneWorld:
 # ── The model, trained on random transitions ──
 
 wm = hw.WorldModel(dim=DIM, k=K, passes=2 * DIM, leak_rate=0.25, input_scaling=0.8,
-                   action_scale=0.33, z_max=3 * K, gather_span=5, tanh_last=True,
+                   z_max=3 * K, gather_span=5, tanh_last=True,
                    lr=0.03, lr_min_frac=0.05, restore_best=True)
 
 obs = rng.uniform(-1, 1, (512, 2)).astype(np.float32)
@@ -56,7 +56,7 @@ zn = wm.encode(hw.paint_stripes(nxt, wm.N))
 wm.fit(z, za, zn, epochs=150, batch_size=16)
 
 
-# ── The adapter: DMC latent world model protocol ──
+# ── The adapter: latent world model protocol ──
 
 class ActionSpace:
     """Bounds only. CEM reads .low and .high; not a gymnasium Box."""
@@ -67,7 +67,7 @@ class ActionSpace:
 
 
 class Adapter:
-    """WorldModel behind the DMC planner protocol.
+    """WorldModel behind the planner protocol.
 
     encode and encode_action take raw obs / actions. predict takes codes.
     rollout takes raw actions (B, H, act_dim), paints and encode_action's
@@ -108,7 +108,7 @@ class Adapter:
         return np.sum((zs[:, -1, :] - goal_z) ** 2, axis=1)
 
 
-# ── Cross-entropy method with a warm start (DMC guide shape) ──
+# ── Cross-entropy method with a warm start ──
 
 def cem_plan(model, z0, goal_z, mean=None):
     lo, hi = model.action_space.low, model.action_space.high

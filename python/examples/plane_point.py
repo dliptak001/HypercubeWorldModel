@@ -27,7 +27,7 @@ def draw(count):
 
 
 wm = hw.WorldModel(dim=DIM, k=K, passes=2 * DIM, leak_rate=0.25, input_scaling=0.8,
-                   action_scale=0.33, z_max=3 * K, gather_span=5, tanh_last=True,
+                   z_max=3 * K, gather_span=5, tanh_last=True,
                    lr=0.03, lr_min_frac=0.05, restore_best=True)
 print(wm)
 

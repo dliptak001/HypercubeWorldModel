@@ -11,7 +11,7 @@ Quick start::
     import hypercube_worldmodel as hw
 
     wm = hw.WorldModel(dim=6, k=5, passes=12, leak_rate=0.25,
-                       input_scaling=0.8, action_scale=0.33,
+                       input_scaling=0.8,
                        z_max=15, gather_span=5, tanh_last=True,
                        lr=0.03, lr_min_frac=0.05, restore_best=True)
     z = wm.encode(hw.paint_stripes(obs, wm.N))          # (count, code_size)
@@ -30,9 +30,11 @@ import numpy as np
 
 from ._core import _Decoder, _WorldModel, cpp_version
 from ._core import paint_stripes as _paint_stripes
+from ._core import mean_abs as _mean_abs
+from ._core import rms as _rms
 from ._version import __version__
 
-__all__ = ["WorldModel", "Decoder", "paint_stripes", "__version__"]
+__all__ = ["WorldModel", "Decoder", "paint_stripes", "mean_abs", "rms", "__version__"]
 
 if cpp_version != __version__:  # pragma: no cover
     raise ImportError(
@@ -101,6 +103,16 @@ def paint_stripes(x, size: int) -> np.ndarray:
     raise ValueError(f"x must be 1-D or 2-D, got {x.ndim}-D")
 
 
+def mean_abs(x) -> float:
+    """Mean of absolute values of a float array."""
+    return float(_mean_abs(_f32(x)))
+
+
+def rms(x) -> float:
+    """Root-mean-square of a float array."""
+    return float(_rms(_f32(x)))
+
+
 def _fit_loop(core, count, epochs, batch_size, shuffle_seed, verbose,
               accumulate, evaluate):
     """The batch cycle shared by WorldModel.fit and Decoder.fit.
@@ -153,9 +165,9 @@ class WorldModel:
     k : int
         Code face dimension, at least 5 and strictly less than ``dim``.
         Also the action cube dimension.
-    action_scale : float
-        Multiplier on the action code as the Predictor sees it. Finite,
-        > 0. Brings E(a) to the level of E(x).
+    output_scale : float
+        Presentation gain on both encoders at Create. Finite, > 0.
+        Default 1. Set each encoder independently afterwards.
     encoder_seed, ic_seed : int
         Encoder weight draw and episode start state. Both encoders use
         both; the action encoder differs only in its cube.
@@ -194,7 +206,7 @@ class WorldModel:
         dim: int,
         k: int,
         *,
-        action_scale: float = 0.5,
+        output_scale: float = 1.0,
         encoder_seed: int = 7934791766227647176,
         ic_seed: int = 1,
         spectral_radius: float = 0.999,
@@ -215,10 +227,11 @@ class WorldModel:
         eps: float = 1e-8,
     ):
         self._ctor = dict(
-            dim=dim, k=k, action_scale=action_scale,
+            dim=dim, k=k,
             encoder_seed=encoder_seed, ic_seed=ic_seed,
             spectral_radius=spectral_radius, leak_rate=leak_rate,
-            input_scaling=input_scaling, history_depth=history_depth,
+            input_scaling=input_scaling, output_scale=output_scale,
+            history_depth=history_depth,
             passes=passes, z_max=z_max, gather_span=gather_span,
             tanh_last=tanh_last, seed=seed,
             **_training_kwargs(lr, lr_min_frac, lr_decay_epochs, restore_best,
@@ -230,7 +243,9 @@ class WorldModel:
     def _wrap(cls, core):
         obj = cls.__new__(cls)
         obj._core = core
-        obj._ctor = dict(core.config())
+        d = dict(core.config())
+        d.pop("action_output_scale", None)
+        obj._ctor = d
         return obj
 
     # ── Encode ──
@@ -246,8 +261,16 @@ class WorldModel:
         return out[0] if one else out
 
     def last_cube(self) -> np.ndarray:
-        """The full N-value episode behind the most recent :meth:`encode`."""
+        """Scaled full view episode behind the most recent :meth:`encode`."""
         return self._core.last_cube()
+
+    def last_raw_cube(self) -> np.ndarray:
+        """Unscaled full view episode behind the most recent :meth:`encode`."""
+        return self._core.last_raw_cube()
+
+    def last_packed(self) -> np.ndarray:
+        """Packed E(x) then E(a) from the most recent predict or accumulate."""
+        return self._core.last_packed()
 
     def encode_action(self, pictures) -> np.ndarray:
         """Action codes for one picture ``(code_size,)`` or many
@@ -303,8 +326,8 @@ class WorldModel:
         return out[0] if one else out
 
     def pack(self, z, za) -> np.ndarray:
-        """What the Predictor sees: E(x) then action_scale times E(a),
-        ``2 * code_size`` long. Rarely needed."""
+        """What the Predictor sees: E(x) then E(a), ``2 * code_size``
+        long. Rarely needed."""
         zz, one_z = _rows(z, self.code_size, "z")
         aa, one_a = _rows(za, self.code_size, "za")
         out = self._core.pack(zz, aa)
@@ -482,8 +505,34 @@ class WorldModel:
         return int(self._core.config()["z_max"])
 
     @property
-    def action_scale(self) -> float:
-        return float(self._ctor["action_scale"])
+    def view_output_scale(self) -> float:
+        return float(self._core.view_output_scale())
+
+    @property
+    def action_output_scale(self) -> float:
+        return float(self._core.action_output_scale())
+
+    def set_view_output_scale(self, scale: float) -> None:
+        self._core.set_view_output_scale(float(scale))
+        self._ctor["output_scale"] = float(self._core.view_output_scale())
+
+    def set_action_output_scale(self, scale: float) -> None:
+        self._core.set_action_output_scale(float(scale))
+
+    def suggest_view_output_scale(self, z, target_rms: float = 1.0) -> float:
+        """Scale that would bring already-run raw view codes to RMS target."""
+        return float(self._core.suggest_view_output_scale(_f32(z), float(target_rms)))
+
+    def suggest_action_output_scale(self, za, target_rms: float = 1.0) -> float:
+        """Scale that would bring already-run raw action codes to RMS target."""
+        return float(self._core.suggest_action_output_scale(_f32(za), float(target_rms)))
+
+    def fit_view_output_scale(self, z, target_rms: float = 1.0) -> None:
+        self._core.fit_view_output_scale(_f32(z), float(target_rms))
+        self._ctor["output_scale"] = float(self._core.view_output_scale())
+
+    def fit_action_output_scale(self, za, target_rms: float = 1.0) -> None:
+        self._core.fit_action_output_scale(_f32(za), float(target_rms))
 
     @property
     def num_weights(self) -> int:
@@ -525,6 +574,7 @@ class WorldModel:
         return {
             "_version": self._PERSISTENCE_VERSION,
             "ctor": dict(self._ctor),
+            "action_output_scale": self.action_output_scale,
             "weights": self._core.weights(),
         }
 
@@ -536,7 +586,12 @@ class WorldModel:
                 f"version only supports up to {self._PERSISTENCE_VERSION}. "
                 f"Upgrade hypercube-worldmodel."
             )
-        self.__init__(**dict(state["ctor"]))
+        ctor = dict(state["ctor"])
+        ctor.pop("action_scale", None)
+        ctor.pop("action_output_scale", None)
+        self.__init__(**ctor)
+        if "action_output_scale" in state:
+            self.set_action_output_scale(state["action_output_scale"])
         self._core.load_weights(_f32(state["weights"]))
 
 

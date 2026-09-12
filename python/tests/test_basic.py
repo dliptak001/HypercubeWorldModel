@@ -17,7 +17,7 @@ K = 5
 
 def make_wm(**kw):
     args = dict(dim=DIM, k=K, passes=12, leak_rate=0.25, input_scaling=0.8,
-                action_scale=0.33, z_max=6, gather_span=3, tanh_last=True,
+                z_max=6, gather_span=3, tanh_last=True,
                 lr=0.03, lr_min_frac=0.05)
     args.update(kw)
     return hw.WorldModel(**args)
@@ -52,6 +52,16 @@ def test_version():
     assert isinstance(hw.__version__, str) and hw.__version__
     assert hw.__version__ == hw._core.__version__
     assert hw.__version__ == hw._core.cpp_version
+
+
+# ── mean_abs / rms ──
+
+def test_mean_abs_and_rms():
+    x = np.array([-0.2, 0.2], dtype=np.float32)
+    assert hw.mean_abs(x) == pytest.approx(0.2)
+    assert hw.rms(x) == pytest.approx(0.2)
+    assert hw.mean_abs(np.zeros(0, dtype=np.float32)) == 0.0
+    assert hw.rms(np.zeros(0, dtype=np.float32)) == 0.0
 
 
 # ── paint_stripes ──
@@ -115,7 +125,7 @@ def test_k_bounds():
 
 
 def test_bad_config_throws():
-    for bad in (dict(action_scale=0.0), dict(action_scale=float("nan")),
+    for bad in (dict(output_scale=0.0), dict(output_scale=float("nan")),
                 dict(gather_span=1), dict(gather_span=7), dict(z_max=1),
                 dict(leak_rate=0.0), dict(leak_rate=float("inf")),
                 dict(spectral_radius=float("nan")), dict(input_scaling=float("nan")),
@@ -230,7 +240,20 @@ def test_pack_layout():
     p = wm.pack(z[0], za[0])
     assert p.shape == (2 * wm.code_size,)
     np.testing.assert_array_equal(p[: wm.code_size], z[0])
-    np.testing.assert_allclose(p[wm.code_size:], 0.33 * za[0], rtol=1e-6)
+    np.testing.assert_array_equal(p[wm.code_size:], za[0])
+
+
+def test_output_scales_independent():
+    wm = make_wm()
+    wm.set_view_output_scale(2.0)
+    wm.set_action_output_scale(3.0)
+    assert wm.view_output_scale == 2.0
+    assert wm.action_output_scale == 3.0
+    z, za, _ = codes(wm, 4)
+    s = wm.suggest_view_output_scale(z)
+    assert s > 0.0
+    wm.fit_view_output_scale(z)
+    assert abs(wm.view_output_scale - s) < 1e-5
 
 
 # ── Training ──

@@ -11,7 +11,7 @@ inline void PrintEncoderBanner(const char* name, const EncoderConfig& c, size_t 
                                float sr_post, size_t k, size_t sub)
 {
     std::printf("%s%senc  dim=%zu N=%zu k=%zu sub=%zu  seed=%llu ic_seed=%llu  "
-                "SR=%.6g SR_post=%.4g leak=%.6g in_scale=%.6g M=%zu T=%zu\n",
+                "SR=%.6g SR_post=%.4g leak=%.6g in_scale=%.6g out_scale=%.6g M=%zu T=%zu\n",
                 name && name[0] ? name : "",
                 name && name[0] ? ": " : "",
                 c.dim, n, k, sub,
@@ -21,6 +21,7 @@ inline void PrintEncoderBanner(const char* name, const EncoderConfig& c, size_t 
                 static_cast<double>(sr_post),
                 static_cast<double>(c.leak_rate),
                 static_cast<double>(c.input_scaling),
+                static_cast<double>(c.output_scale),
                 c.history_depth, c.passes);
     std::fflush(stdout);
 }

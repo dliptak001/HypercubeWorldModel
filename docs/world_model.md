@@ -1,6 +1,6 @@
 # World model
 
-**Status: implemented in WorldModel/. Pack is E(x) cat E(a). E(a) comes from a second Encoder on a k-cube. Terrain walker is tests/TerrainWalker/. The SDK guide is [CPP_SDK.md](CPP_SDK.md).**
+**Status: implemented in WorldModel/. Pack is E(x) cat E(a). E(a) comes from a second Encoder on a k-cube. The SDK guide is [CPP_SDK.md](CPP_SDK.md).**
 
 ## Definitions
 
@@ -21,7 +21,7 @@
 | a | The action, painted as a picture of 2ᵏ cells, one per vertex of the action cube. What the picture looks like is the caller's job. |
 | E(a) | EncodeAction(a, za): run an action episode on the k-cube, write its whole output. Length 2ᵏ. |
 | za | The buffer holding E(a). Length 2ᵏ. Second argument of Predict and Accumulate. |
-| action_scale | Multiplier on E(a) as Pack lays it on the extra bit-face. za itself is untouched. Brings E(a) to the level of E(x). |
+| output_scale | Encoder presentation gain on the returned cube. View and action encoders have their own. Pack does not scale. |
 | first subcube | Predictor vertices whose extra address bit is 0. Length 2ᵏ. E(x) in, predicted next E(x) out. |
 | extra bit-face | Predictor vertices whose extra address bit is 1. Length 2ᵏ. Holds E(a). |
 | ŝ | Predict(z, za): a predicted next k-face. The first subcube of the Predictor output. |
@@ -30,8 +30,10 @@
 | gather_span | Predictor LCN lookback window width in fields. |
 | seed | Predictor LCN weight seed. The Encoder has its own seed and ic_seed. |
 | batch | One BeginBatch, some Accumulate calls, one EndBatch. |
-| Pack | Concatenate two k-faces: E(x) on the first subcube, action_scale × E(a) on the extra bit-face. |
-| LastCube | Full encoder episode from the most recent Encode. Length N. |
+| Pack | Concatenate two k-faces: E(x) on the first subcube, E(a) on the extra bit-face. |
+| LastCube | Scaled full view episode from the most recent Encode. Length N. |
+| LastRawCube | Unscaled full view episode from the most recent Encode. Length N. The raw k-face is the first CodeSize() of this cube. |
+| LastPacked | Packed E(x) then E(a) from the most recent Predict or Accumulate. Length 2 × CodeSize(). |
 | Rollout | Predict chained over H action codes: Rollout(z0, actions, out) writes H + 1 view codes, the first being z0. |
 | H | Number of action codes in a rollout. |
 | PaintStripes | Free function. Lays a short vector onto a field as contiguous stripes, so a thin state or action vector becomes a fat picture. |
@@ -67,7 +69,7 @@ to cut. WorldModel does not keep a code: two windows need two buffers.
 The action field is another encoder episode, not a side door.
 
 The Predictor never sees dim. Its own cube is k+1, twice the k-face.
-Pack lays E(x) on the first subcube and action_scale × E(a) on the
+Pack lays E(x) on the first subcube and E(a) on the
 extra bit-face. Vertex i of the view sits one hop from vertex i of
 the action channel. Nothing is added into E(x). Predict returns the
 first subcube of that cube. If P ignores the second channel, two
@@ -81,10 +83,10 @@ cube sized to fit the code it has to produce.
 
 1. **The caller paints the action as a picture.** The picture has 2ᵏ
    cells, one per vertex of the action cube. What it shows is the
-   task's business: a constant fill when there is no motor, a
-   half-plane toward the heading in the terrain walker. It should be
-   fat, meaning many cells carry signal, so the reservoir has
-   something to work with.
+   task's business: a constant fill when there is no motor, or
+   PaintStripes of a short action vector. It should be fat, meaning
+   many cells carry signal, so the reservoir has something to work
+   with.
 
 2. **The action encoder runs one episode on it.** This encoder is
    built from the view encoder's EncoderConfig with dim replaced by k:
@@ -103,17 +105,17 @@ cube sized to fit the code it has to produce.
    on the picture, so a task with a handful of actions encodes each
    picture once and reuses the code for every pair.
 
-5. **Pack scales it on the way in.** The whole output of a small cube
-   runs hotter than a face cut from a big one. action_scale is one
-   multiplier applied as Pack lays E(a) on the extra bit-face, so P
-   sees the two channels at a chosen ratio. The stored code za is
-   never changed; only what P sees is scaled.
+5. **Each encoder has an output_scale.** Presentation after the
+   episode, not drive. The k-cube often runs hotter than a k-face cut
+   from a larger cube; FitActionOutputScale / FitViewOutputScale on
+   already-run raw codes bring them to the same RMS. Pack concatenates
+   the codes as stored.
 
 6. **P reads it one hop away.** On the (k+1)-cube, vertex i of E(a)
    is the neighbour of vertex i of E(x) along the extra axis. The
    LCN's first depth already sees both. The loss never mentions the
-   action half; P is free to use it or not, and the swap check in
-   [terrain_walker.md](terrain_walker.md) is how you find out which.
+   action half; P is free to use it or not. If two different action
+   codes from the same view produce the same guess, P is ignoring a.
 
 Train on pairs of view codes and the action code that took you from
 one to the next, not on fields:
@@ -134,9 +136,7 @@ snapshot. ResetTraining forgets Adam; it does not touch the Encoder.
 
 A task with no motor still runs some action picture through the
 action encoder. The two-sine mix in
-[world_model_test.md](world_model_test.md) uses a constant fill. The
-Terrain walker in [terrain_walker.md](terrain_walker.md) paints a
-half-plane toward the executed cardinal on a 2ᵏ strip.
+[world_model_test.md](world_model_test.md) uses a constant fill.
 
 ## Files
 
@@ -165,7 +165,6 @@ struct WorldModelConfig
 {
     EncoderConfig encoder;
     size_t   k;            // code face and action cube; in [5, encoder.dim)
-    float    action_scale; // multiplier on E(a) at Pack; > 0
     WorldModelPredictorConfig predictor;
 };
 
@@ -179,7 +178,9 @@ public:
     void Save(const std::filesystem::path& file) const;
 
     const float* Encode(std::span<const float> field, std::span<float> dst);
-    const float* LastCube() const;       // full view episode; until next Encode
+    const float* LastCube() const;       // scaled full view episode; until next Encode
+    const float* LastRawCube() const;    // unscaled full view episode
+    const float* LastPacked() const;     // E(x) then E(a); after Predict / Accumulate
     const float* EncodeAction(std::span<const float> field, std::span<float> dst);
     const float* Predict(std::span<const float> z, std::span<const float> a);
     void Rollout(std::span<const float> z0, std::span<const float> actions,
@@ -209,6 +210,14 @@ public:
     size_t K() const;
     const WorldModelConfig& Config() const;
     EncoderConfig ActionEncoderConfig() const;   // encoder with dim = k
+    float ViewOutputScale() const;
+    float ActionOutputScale() const;
+    void  SetViewOutputScale(float scale);
+    void  SetActionOutputScale(float scale);
+    float SuggestViewOutputScale(std::span<const float> z, float target_rms = 1.f) const;
+    float SuggestActionOutputScale(std::span<const float> za, float target_rms = 1.f) const;
+    void  FitViewOutputScale(std::span<const float> z, float target_rms = 1.f);
+    void  FitActionOutputScale(std::span<const float> za, float target_rms = 1.f);
     float RealizedSpectralRadius() const;
     float ActionRealizedSpectralRadius() const;
 };
@@ -217,7 +226,7 @@ public:
 Validation at Create: k must be in [5, encoder.dim), plus everything
 Encoder and Predictor already check. The action encoder is the view
 EncoderConfig with dim replaced by k, not a knob; 5 is the smallest
-cube Encoder accepts. action_scale must be > 0. Predictor dim is
+cube Encoder accepts. Predictor dim is
 k+1, not a knob. Encode rejects a dst that is not CodeSize() long.
 EncodeAction rejects a field or dst that is not CodeSize() long.
 Pack rejects z or a that is not CodeSize() long, and a dst that is
@@ -226,9 +235,12 @@ a whole number of codes and an out span that is not one code longer.
 PaintStripes rejects an empty source or one longer than its
 destination.
 
-Save writes the config and the Predictor weights; Load reads them,
-rebuilds both encoders from the seeds in the config, and checks the
-weight count. Adam state is not saved. Encode, EncodeAction, and
+Save writes the config (including both encoder output_scales) and the
+Predictor weights; Load reads them, rebuilds both encoders from the
+seeds in the config, and checks the weight count. File version 2.
+Version 1 files still load: the old Pack multiplier becomes the
+action encoder's output_scale and the view stays at 1. Adam state is
+not saved. Encode, EncodeAction, and
 Predict on the reloaded instance reproduce the original exactly. The
 main smoke test checks all three across a Save and Load with passes
 left at 0.

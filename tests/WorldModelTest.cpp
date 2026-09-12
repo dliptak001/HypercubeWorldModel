@@ -68,7 +68,7 @@ static constexpr size_t kHop = size_t{1} << kDim;
 static constexpr uint64_t kDataSeed = 4;
 
 // Two-sine has no motor. Dummy action field of length 2^k, through the
-// action encoder once. How to paint a real cardinal is TerrainWalker.
+// action encoder once.
 static constexpr float kActionFill = 1.f;
 
 static constexpr int kSineTerms = 2;
@@ -109,16 +109,6 @@ static float MeanSquare(std::span<const float> a)
     for (const float x : a)
         s += x * x;
     return s / static_cast<float>(a.size());
-}
-
-static double MeanAbs(std::span<const float> x)
-{
-    if (x.empty())
-        return 0.0;
-    double a = 0.0;
-    for (float v : x)
-        a += std::fabs(static_cast<double>(v));
-    return a / static_cast<double>(x.size());
 }
 
 struct SineTerm
@@ -439,10 +429,10 @@ int main()
     {
         std::printf("stage mean|x|=%.4g  mean|s_train|=%.4g  "
                     "mean|s_val|=%.4g  mean|s_test|=%.4g\n",
-                    MeanAbs(train.first_field),
-                    MeanAbs(train.songs[0][0]),
-                    MeanAbs(val.songs[0][0]),
-                    MeanAbs(test.songs[0][0]));
+                    static_cast<double>(MeanAbs(train.first_field)),
+                    static_cast<double>(MeanAbs(train.songs[0][0])),
+                    static_cast<double>(MeanAbs(val.songs[0][0])),
+                    static_cast<double>(MeanAbs(test.songs[0][0])));
         std::fflush(stdout);
     }
 

@@ -14,12 +14,12 @@
 | code, E(x), E(a) | Length-2ᵏ arrays. E(x) is the view code; E(a) is the action code. |
 | field | N values, one per view-cube vertex. What encode reads. |
 | paint_stripes | Lay a short vector onto a field as contiguous stripes. |
-| code_size, latent_dim | 2ᵏ. Adapter.latent_dim is this. |
+| code_size, latent_dim | 2ᵏ. A planner adapter may expose this as latent_dim. |
 | passes | Episode length T. 0 means a full tour of that encoder's cube. |
 | z_max | Predictor depth. 0 means k+1. |
-| action_scale | Multiplier on E(a) as the Predictor sees it. |
-| rollout | WorldModel.rollout takes action **codes**. The DMC adapter's rollout takes raw actions and encodes them once. |
-| action_space | Adapter bounds: .low and .high. Not a gymnasium Box. The WorldModel never sees bounds. |
+| output_scale | Encoder presentation gain at Create. Default 1. View and action can be set independently after. |
+| rollout | WorldModel.rollout takes action **codes**. A vector adapter's rollout takes raw actions and encodes them once. |
+| action_space | Bounds: .low and .high. Not a gymnasium Box. The WorldModel never sees bounds. |
 
 HypercubeWorldModel is a **world model with frozen encoders** on a
 Boolean hypercube. Its neurons sit on the vertices of the cube: a cube
@@ -154,7 +154,7 @@ act = rng.uniform(-1, 1, (count, 2)).astype(np.float32)
 obs_next = np.clip(obs + 0.1 * act, -1, 1)
 
 wm = hw.WorldModel(dim=6, k=5, passes=12, leak_rate=0.25, input_scaling=0.8,
-                   action_scale=0.33, z_max=15, gather_span=5, tanh_last=True,
+                   z_max=15, gather_span=5, tanh_last=True,
                    lr=0.03, lr_min_frac=0.05, restore_best=True)
 
 z = wm.encode(hw.paint_stripes(obs, wm.N))                # (count, code_size)
@@ -222,7 +222,7 @@ cube of N values                      cube of 2ᵏ values
     v                                     v
 E(x), the view code ------+   +------ E(a), the action code
                           v   v
-        (k+1)-cube: E(x) on one half, action_scale × E(a) on the other
+        (k+1)-cube: E(x) on one half, E(a) on the other
                           |
                           v  Predictor, one forward pass
         2ᵏ⁺¹ outputs; the first 2ᵏ are the predicted next E(x)
@@ -255,7 +255,7 @@ import hypercube_worldmodel as hw
 wm = hw.WorldModel(
     dim,                 # view cube; N = 2**dim; 5 to 24, and at least 6 here
     k,                   # code face and action cube; at least 5, less than dim
-    action_scale=...,    # multiplier on E(a) as the Predictor sees it; finite, > 0
+    output_scale=...,    # presentation gain on both encoders at Create; finite, > 0; default 1
     encoder_seed=...,    # encoder weight draw (both encoders)
     ic_seed=...,         # encoder episode start state (both encoders)
     spectral_radius=..., # target for the recurrent block; finite, > 0
@@ -276,7 +276,7 @@ wm = hw.WorldModel(
 |-----------|------|-------------|
 | dim | int | View cube dimension. N = 2ᵈⁱᵐ. The Encoder accepts 5 to 24; a WorldModel needs at least 6 so that k has room. |
 | k | int | Code face dimension and action cube dimension. At least 5, strictly less than dim. code_size = 2ᵏ. |
-| action_scale | float | Multiplier on E(a) as it is laid next to E(x) for the Predictor. Finite, > 0. Brings E(a) to the level of E(x). |
+| output_scale | float | Presentation gain on both encoders at Create. Finite, > 0. Default 1. Set view and action independently after. |
 | encoder_seed, ic_seed | int | Weight draw and episode start state. Both encoders use both; the action encoder differs only in its cube. |
 | spectral_radius | float | Target for the recurrent block. Finite, > 0. |
 | leak_rate | float | Leaky integrator mix. Finite, in (0, 1]; 1 is full replacement each step. |
@@ -306,7 +306,9 @@ shape. The loop over rows runs in C++ with the GIL released.
 | Method | Role |
 |--------|------|
 | encode(fields) | View codes. (N,) or (count, N) in; (code_size,) or (count, code_size) out. |
-| last_cube() | The full N-value episode behind the most recent encode. |
+| last_cube() | Scaled full view episode behind the most recent encode. |
+| last_raw_cube() | Unscaled full view episode behind the most recent encode. |
+| last_packed() | Packed E(x) then E(a) from the most recent predict or accumulate. |
 | encode_action(pictures) | Action codes. (code_size,) or (count, code_size) in and out. A full episode on the action cube per row, not a lookup. |
 | predict(z, za) | Predicted next view codes. Matching rows, or one za broadcast against many z. |
 | rollout(z0, actions) | Chain predict over a plan of action codes: (H, code_size) or (count, H, code_size) in; (H + 1, code_size) or (count, H + 1, code_size) out, row 0 being z0. |
@@ -331,11 +333,18 @@ shape. The loop over rows runs in C++ with the GIL released.
 | N, code_size | 2ᵈⁱᵐ and 2ᵏ |
 | passes, action_passes | Resolved passes per view episode and per action episode |
 | z_max | Resolved Predictor depth (0 already replaced by k+1) |
-| action_scale | As given |
+| view_output_scale, action_output_scale | Encoder presentation gains in effect |
 | num_weights | Predictor weights: 2ᵏ⁺¹ × (k+1) × gather_span × z_max |
 | weights | The Predictor weights as a float32 array, layout depth, axis, tap, vertex. **Settable**, exact length required |
 | grad | The accumulated gradient, same layout as weights |
 | realized_spectral_radius, action_realized_spectral_radius | The estimate each encoder settled on |
+
+### mean_abs(x) / rms(x)
+
+Mean of absolute values, and root-mean-square, of a float array.
+Empty is 0. Use these on a field, `last_raw_cube()`, the k-face
+(first `code_size` of that cube), `last_cube()`, or the two halves
+of `last_packed()`.
 
 ### paint_stripes(x, size)
 
@@ -415,35 +424,33 @@ encode an action, step a code, roll a code out over a plan, and score
 the result. The package gives the first four and leaves the fifth to
 the caller, because scoring depends on the task and not on the model.
 
-The DeepMind Control Suite protocol for a latent world model maps
-onto the package through a thin adapter. WorldModel.rollout takes
-action **codes**. The adapter's rollout takes **raw** actions
-(B, H, act_dim), paints and encode_action's that block once, then
-calls WorldModel.rollout. CEM from the evaluation guide is then
+A sampling planner maps onto the package through a thin adapter.
+WorldModel.rollout takes action **codes**. The adapter's rollout
+takes **raw** actions (B, H, act_dim), paints and encode_action's
+that block once, then calls WorldModel.rollout. CEM is then
 copy-paste: it samples in action space and passes those arrays to
 rollout.
 
-This path is **state-based**. Concatenate the DMC observation dict
-into a vector, paint_stripes onto N, encode. A 64×64 RGB frame is
+This path is **state-based**. Concatenate a host observation into a
+vector, paint_stripes onto N, encode. A 64×64 RGB frame is
 thousands of pixels; N is 2ᵈⁱᵐ (64 at dim 6). paint_stripes cannot
 put a camera frame on the cube. Pixels need a painter the host
-writes. The evaluation guide says the same for a hypercube encoder:
-feed the state vector, skip rendering.
+writes.
 
 | Planner needs | Where | Note |
 |---------------|-------|------|
-| latent_dim | code_size | 2ᵏ. Adapter.latent_dim |
+| latent_dim | code_size | 2ᵏ |
 | encode(obs) | paint_stripes then encode | obs is (count, obs_dim) **state**. Not a pixel frame |
 | encode_action(a) | paint_stripes then encode_action | raw bounded actions. A full action episode per row |
 | predict(z, za) | predict | codes in, codes out; batches in C++ |
 | rollout(z0, actions) | adapter: raw (B, H, act_dim) | encodes the block once, then WorldModel.rollout on codes |
 | action_space.low / .high | adapter.action_space | planner clips here; the WorldModel never sees bounds |
-| cost(zs, goal) | caller | distance to a goal code, or a reward probe on frozen codes |
+| cost(zs, goal) | caller | distance to a goal code, or a head on frozen codes |
 
 A goal is a view like any other: paint it, encode it, and compare
 codes. [python/examples/plan_toy.py](../python/examples/plan_toy.py)
-is that adapter, with CEM in the guide's shape. For a state-based
-suite task, swap the environment and keep the adapter.
+is that adapter, with CEM. For another state-based task, swap the
+environment and keep the adapter.
 
 ## Error handling
 
@@ -459,13 +466,13 @@ Typical mistakes:
 | Symptom | Fix |
 |---------|-----|
 | ValueError on k at construction | k must be at least 5 and strictly less than dim, so dim must be at least 6 |
-| ValueError on a float knob | spectral_radius, leak_rate, input_scaling, action_scale, lr, and eps must be finite; a NaN is rejected even under fast-math |
+| ValueError on a float knob | spectral_radius, leak_rate, input_scaling, output_scale, lr, and eps must be finite; a NaN is rejected even under fast-math |
 | ValueError on encode | The field must be N long; a state vector goes through paint_stripes first |
 | ValueError on encode_action | The picture must be code_size long, not N; the action cube is k, not dim |
 | ValueError on rollout | actions must be (H, code_size) for one start code, (count, H, code_size) for many, with count matching z0 |
 | Loss looks huge | accumulate returns 0.5 × the **sum** of squared error over the code, summed over the rows |
 | Loss never falls | Check the cycle order, and that begin_batch runs per batch, not per epoch |
-| Two actions give the same prediction | The Predictor may be ignoring E(a); raise action_scale, and check that one view code with different action codes gives different predictions |
+| Two actions give the same prediction | The Predictor may be ignoring E(a); raise the action encoder's output_scale, and check that one view code with different action codes gives different predictions |
 | A code changed between runs | It cannot; the encoders are frozen. Check the field, or the seeds |
 | Second fit behaves oddly | reset_training first; Adam moments and step count persist |
 | restore_best did nothing | restore_best must be True, and observe must have seen a finite, lower metric |

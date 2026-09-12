@@ -1,6 +1,11 @@
 # HypercubeWorldModel - Change Log
 
 ## Unreleased
+- Encoder: output_scale presentation gain on the returned cube (default 1, not drive). Delay line stays raw (RawCube). SuggestedOutputScale is target_rms / rms(raw); FitOutputScale sets it; Suggest does not mutate.
+- WorldModel: drop action_scale. Pack is concat. Each encoder has its own output_scale. HWM1 file version 2 writes both scales; Load of v1 maps the old Pack multiplier onto the action encoder and leaves the view at 1. Python WorldModel(..., action_scale=) is gone.
+- Magnitude readouts: MeanAbs and Rms on a span; Encoder RawCube / ScaledCube; WorldModel LastRawCube / LastPacked. CompressionTest, JepaPredictorTest, and WorldModelTest print stage lines through MeanAbs.
+- Planner example and SDK prose name the surface as a planner protocol, not after a suite. Types stay WorldModel / Decoder / paint_stripes.
+- Drop the elevation-map walker study (test target, sources, and write-up). The suite sandbox is the action-conditioned host; WorldModelTest remains the C++ mix.
 - GitHub Release v1.0.0 created from the existing tag with the ChangeLog entry as notes and the 25 wheels and the sdist from the tag's workflow run attached
 - wheels.yml: the publish job creates the GitHub Release on every v* tag, wheels and sdist attached, notes auto-generated; a tag alone never created one
 

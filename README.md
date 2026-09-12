@@ -273,11 +273,6 @@ Each test is one program with its own write-up.
 - [WorldModelTest](tests/WorldModelTest.cpp): the full WorldModel on a
   stream with a constant action. Write-up:
   [docs/world_model_test.md](docs/world_model_test.md).
-- [TerrainWalkerTest](tests/TerrainWalker/TerrainWalkerTest.cpp): a
-  walker on an elevation map, the WorldModel predicting the next crop
-  from the current crop and the step taken, and the swap check that
-  shows the Predictor reads the action. Write-up:
-  [docs/terrain_walker.md](docs/terrain_walker.md).
 
 The component specifications are [docs/encoder.md](docs/encoder.md),
 [docs/predictor.md](docs/predictor.md),

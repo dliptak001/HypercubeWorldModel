@@ -3,7 +3,6 @@
 
 #include "WorldModel.h"
 
-#include <bit>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -12,7 +11,8 @@
 namespace {
 
 constexpr char kMagic[4] = {'H', 'W', 'M', '1'};
-constexpr uint32_t kFileVersion = 1;
+constexpr uint32_t kFileVersionV1 = 1;
+constexpr uint32_t kFileVersion = 2;
 
 template <typename T>
 void WriteRaw(std::ostream& os, const T& v)
@@ -57,15 +57,10 @@ WorldModel::WorldModel(const WorldModelConfig& cfg)
     if (cfg.k < 5 || cfg.k >= dim)
         throw std::invalid_argument(
             "WorldModel::Create k must be in [5, encoder.dim)");
-    // Bit-level finiteness test; std::isfinite is unreliable under -ffast-math.
-    const bool scale_finite =
-        (std::bit_cast<uint32_t>(cfg.action_scale) & 0x7f800000u) != 0x7f800000u;
-    if (!scale_finite || !(cfg.action_scale > 0.f))
-        throw std::invalid_argument(
-            "WorldModel::Create action_scale must be finite and > 0");
 
     // action encoder: same knobs and seeds, cube of dimension k; its
-    // whole output is E(a), already the k-face size
+    // whole output is E(a), already the k-face size. output_scale starts
+    // the same as the view encoder; SetActionOutputScale after Create.
     EncoderConfig acfg = cfg.encoder;
     acfg.dim = cfg.k;
     act_enc_ = Encoder::Create(acfg);
@@ -103,6 +98,21 @@ const float* WorldModel::LastCube() const
     return last_cube_;
 }
 
+const float* WorldModel::LastRawCube() const
+{
+    if (last_cube_ == nullptr)
+        throw std::invalid_argument("WorldModel::LastRawCube requires a prior Encode");
+    return enc_->RawCube();
+}
+
+const float* WorldModel::LastPacked() const
+{
+    if (!has_packed_)
+        throw std::invalid_argument(
+            "WorldModel::LastPacked requires a prior Predict or Accumulate");
+    return packed_.data();
+}
+
 const float* WorldModel::EncodeAction(std::span<const float> field, std::span<float> dst)
 {
     const size_t sub = CodeSize();
@@ -131,16 +141,16 @@ void WorldModel::Pack(std::span<const float> z, std::span<const float> a,
     if (dst.size() != pred_->Size())
         throw std::invalid_argument(
             "WorldModel::Pack dst must be 2 * CodeSize() long");
-    const float s = cfg_.action_scale;
     for (size_t i = 0; i < sub; ++i)
         dst[i] = z[i];
     for (size_t i = 0; i < sub; ++i)
-        dst[sub + i] = s * a[i];
+        dst[sub + i] = a[i];
 }
 
 const float* WorldModel::Predict(std::span<const float> z, std::span<const float> a)
 {
     Pack(z, a, packed_);
+    has_packed_ = true;
     return pred_->Predict(packed_);
 }
 
@@ -191,7 +201,8 @@ void WorldModel::Save(const std::filesystem::path& file) const
     WriteRaw(os, static_cast<uint64_t>(e.ic_seed));
 
     WriteRaw(os, static_cast<uint64_t>(cfg_.k));
-    WriteRaw(os, cfg_.action_scale);
+    WriteRaw(os, enc_->OutputScale());
+    WriteRaw(os, act_enc_->OutputScale());
     WriteRaw(os, static_cast<uint64_t>(cfg_.predictor.z_max));
     WriteRaw(os, static_cast<uint64_t>(cfg_.predictor.gather_span));
     WriteRaw(os, static_cast<uint8_t>(cfg_.predictor.tanh_last ? 1 : 0));
@@ -227,7 +238,7 @@ std::unique_ptr<WorldModel> WorldModel::Load(const std::filesystem::path& file)
         throw std::runtime_error("WorldModel::Load bad magic in " + file.string());
 
     const uint32_t version = ReadRaw<uint32_t>(is, "version");
-    if (version != kFileVersion)
+    if (version != kFileVersion && version != kFileVersionV1)
         throw std::runtime_error("WorldModel::Load unsupported version " +
                                  std::to_string(version) + " in " + file.string());
 
@@ -242,7 +253,18 @@ std::unique_ptr<WorldModel> WorldModel::Load(const std::filesystem::path& file)
     cfg.encoder.ic_seed = ReadRaw<uint64_t>(is, "encoder.ic_seed");
 
     cfg.k = static_cast<size_t>(ReadRaw<uint64_t>(is, "k"));
-    cfg.action_scale = ReadRaw<float>(is, "action_scale");
+    float action_output_scale = 1.f;
+    if (version == kFileVersionV1)
+    {
+        // v1 Pack multiplied E(a) by action_scale; view codes were raw.
+        action_output_scale = ReadRaw<float>(is, "action_scale");
+        cfg.encoder.output_scale = 1.f;
+    }
+    else
+    {
+        cfg.encoder.output_scale = ReadRaw<float>(is, "view_output_scale");
+        action_output_scale = ReadRaw<float>(is, "action_output_scale");
+    }
     cfg.predictor.z_max = static_cast<size_t>(ReadRaw<uint64_t>(is, "z_max"));
     cfg.predictor.gather_span = static_cast<size_t>(ReadRaw<uint64_t>(is, "gather_span"));
     cfg.predictor.tanh_last = ReadRaw<uint8_t>(is, "tanh_last") != 0;
@@ -259,6 +281,7 @@ std::unique_ptr<WorldModel> WorldModel::Load(const std::filesystem::path& file)
     const uint64_t n_weights = ReadRaw<uint64_t>(is, "n_weights");
 
     auto wm = Create(cfg);   // invalid_argument here means a bad config in the file
+    wm->SetActionOutputScale(action_output_scale);
     if (n_weights != wm->pred_->Weights().size())
         throw std::runtime_error("WorldModel::Load weight count " + std::to_string(n_weights) +
                                  " does not match config in " + file.string());
@@ -285,6 +308,7 @@ float WorldModel::Accumulate(std::span<const float> z, std::span<const float> a,
         throw std::invalid_argument(
             "WorldModel::Accumulate next must be CodeSize() long");
     Pack(z, a, packed_);
+    has_packed_ = true;
     return pred_->Accumulate(packed_, next);
 }
 
@@ -346,6 +370,47 @@ size_t WorldModel::CodeSize() const
 EncoderConfig WorldModel::ActionEncoderConfig() const
 {
     return act_enc_->Config();
+}
+
+float WorldModel::ViewOutputScale() const
+{
+    return enc_->OutputScale();
+}
+
+float WorldModel::ActionOutputScale() const
+{
+    return act_enc_->OutputScale();
+}
+
+void WorldModel::SetViewOutputScale(float scale)
+{
+    enc_->SetOutputScale(scale);
+    cfg_.encoder.output_scale = enc_->OutputScale();
+}
+
+void WorldModel::SetActionOutputScale(float scale)
+{
+    act_enc_->SetOutputScale(scale);
+}
+
+float WorldModel::SuggestViewOutputScale(std::span<const float> z, float target_rms) const
+{
+    return SuggestedOutputScale(z, target_rms);
+}
+
+float WorldModel::SuggestActionOutputScale(std::span<const float> za, float target_rms) const
+{
+    return SuggestedOutputScale(za, target_rms);
+}
+
+void WorldModel::FitViewOutputScale(std::span<const float> z, float target_rms)
+{
+    SetViewOutputScale(SuggestViewOutputScale(z, target_rms));
+}
+
+void WorldModel::FitActionOutputScale(std::span<const float> za, float target_rms)
+{
+    SetActionOutputScale(SuggestActionOutputScale(za, target_rms));
 }
 
 float WorldModel::RealizedSpectralRadius() const

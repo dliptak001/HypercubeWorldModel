@@ -343,7 +343,7 @@ act = rng.uniform(-1, 1, (count, 2)).astype(np.float32)
 obs_next = np.clip(obs + 0.1 * act, -1, 1)
 
 wm = hw.WorldModel(dim=6, k=5, passes=12, leak_rate=0.25, input_scaling=0.8,
-                   action_scale=0.33, z_max=15, gather_span=5, tanh_last=True,
+                   z_max=15, gather_span=5, tanh_last=True,
                    lr=0.03, lr_min_frac=0.05, restore_best=True)
 
 z = wm.encode(hw.paint_stripes(obs, wm.N))                # (count, code_size)
@@ -391,20 +391,20 @@ A sampling planner needs five calls from a model: encode a view,
 encode an action, step a code, roll a code out over a plan, and score
 the result. The package gives the first four; scoring is the task's.
 [python/examples/plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py)
-is the DeepMind Control Suite protocol: CEM samples raw actions,
-reads action_space.low / .high, and passes those arrays to rollout.
+is that planner protocol: CEM samples raw actions, reads
+action_space.low / .high, and passes those arrays to rollout.
 The adapter paints and encode_action's the block once, then
 WorldModel.rollout on the codes. This path is state-based: concatenate
 the observation into a vector, paint_stripes onto N, encode. A camera
-frame is not a field of N. Swap the environment for a state-based
-suite task and keep the adapter.
+frame is not a field of N. Swap the environment for another
+state-based task and keep the adapter.
 
 ---
 
 ## Features
 
 - **Two classes.** hw.WorldModel and hw.Decoder are the whole surface,
-  plus one function, hw.paint_stripes.
+  plus paint_stripes, mean_abs, and rms.
 - **Frozen encoders.** Codes depend only on the field and the seeds;
   encode a stream once, train on it many times.
 - **fit.** Shuffle, batch, cosine schedule, restore-best with an
@@ -439,7 +439,7 @@ pip.
 | Script | What it is for |
 |--------|----------------|
 | [plane_point.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plane_point.py) | The quick start with a held-out score against the identity guess, a Decoder, and a save and load round trip |
-| [plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py) | DMC protocol adapter: CEM passes raw actions to rollout, action_space.low / .high; state vectors, not pixels |
+| [plan_toy.py](https://github.com/dliptak001/HypercubeWorldModel/blob/master/python/examples/plan_toy.py) | Planner adapter: CEM passes raw actions to rollout, action_space.low / .high; state vectors, not pixels |
 
 ```bash
 # from a clone of HypercubeWorldModel, after: pip install hypercube-worldmodel
@@ -469,11 +469,6 @@ its own write-up in the repository.
 - [WorldModelTest](https://github.com/dliptak001/HypercubeWorldModel/blob/master/tests/WorldModelTest.cpp): the full WorldModel on a
   stream with a constant action. Write-up:
   [docs/world_model_test.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model_test.md).
-- [TerrainWalkerTest](https://github.com/dliptak001/HypercubeWorldModel/blob/master/tests/TerrainWalker/TerrainWalkerTest.cpp): a
-  walker on an elevation map, the WorldModel predicting the next crop
-  from the current crop and the step taken, and the swap check that
-  shows the Predictor reads the action. Write-up:
-  [docs/terrain_walker.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/terrain_walker.md).
 
 The component specifications are
 [docs/encoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/encoder.md),

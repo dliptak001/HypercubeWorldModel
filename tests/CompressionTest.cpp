@@ -105,16 +105,6 @@ static float MeanSquare(std::span<const float> a)
     return s / static_cast<float>(a.size());
 }
 
-static double MeanAbs(std::span<const float> x)
-{
-    if (x.empty())
-        return 0.0;
-    double a = 0.0;
-    for (float v : x)
-        a += std::fabs(static_cast<double>(v));
-    return a / static_cast<double>(x.size());
-}
-
 // One field: sines on the cube, vertex i = sample i.
 static void FillSineField(std::span<float> x, std::mt19937_64& rng)
 {
@@ -217,7 +207,7 @@ int main()
     dec->FitInputScale(train_subs_flat);
 
     {
-        const float* z = enc->RunEpisode(train.fields[0]);
+        enc->RunEpisode(train.fields[0]);
         const float scale = dec->InputScale();
         std::vector<float> scaled(sub);
         for (size_t i = 0; i < sub; ++i)
@@ -226,16 +216,16 @@ int main()
             "(mean |value|; ~1 is a live field, ~0 is crushed)\n");
         std::printf("CompressionTest:   Field (sine on the cube)                 "
                     "mean|x|=%.4g  (N=%zu)\n",
-                    MeanAbs(train.fields[0]), n);
+                    static_cast<double>(MeanAbs(train.fields[0])), n);
         std::printf("CompressionTest:   Encoder output (full cube, age 0)        "
                     "mean|z|=%.4g  (N=%zu)\n",
-                    MeanAbs(std::span(z, n)), n);
+                    static_cast<double>(MeanAbs(std::span(enc->RawCube(), n))), n);
         std::printf("CompressionTest:   Encoder k-face (compression)             "
                     "mean|s|=%.4g  (sub=%zu)\n",
-                    MeanAbs(train.subs[0]), sub);
+                    static_cast<double>(MeanAbs(train.subs[0])), sub);
         std::printf("CompressionTest:   Decoder input (k-face * input_scale)     "
                     "mean|f|=%.4g  (sub=%zu, scale=%.4g)\n",
-                    MeanAbs(scaled), sub, static_cast<double>(scale));
+                    static_cast<double>(MeanAbs(scaled)), sub, static_cast<double>(scale));
         std::fflush(stdout);
     }
 

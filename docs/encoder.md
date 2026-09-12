@@ -16,12 +16,13 @@
 | s₀ | Start state: N × M floats of delay-line history, drawn once at construction. State, not weights. |
 | ic_seed | Seed for drawing s₀. Separate from the weight seed. |
 | M | History depth: how many past outputs the delay line keeps. Valid range [1, 64]. |
-| slice | One age of the delay line, N floats. Age 0 is the newest; that is what RunEpisode returns. |
+| slice | One age of the delay line, N floats. Age 0 is the newest, unscaled; RawCube. RunEpisode returns that slice times output_scale. |
 | T | Passes per episode (config field `passes`). 0 means T = N, a full tour. |
 | c | Pass counter within an episode, 0 .. T−1. |
 | drive | The length-N field injected on one pass: the input re-addressed by XOR with c. |
 | leak rate | Mix between the previous output and the new tanh. 1 means full replacement. |
 | input scaling | How hard the field drives the cube. Input weights are drawn U(−1, 1), then multiplied by input_scaling / √dim. |
+| output_scale | Presentation gain on the cube RunEpisode returns. Finite, > 0. Default 1. Does not enter Step. RawCube is the unscaled delay-line slice. |
 | spectral radius | Target size of the recurrent operator, applied to the recurrent weights only. |
 | seed | Master seed for the weight draws. Named substreams keep input, recurrent, and probe draws from colliding. |
 | k | Dimension of the face kept for the Decoder. Strictly less than dim. Compression is this cut. |
@@ -133,6 +134,7 @@ struct EncoderConfig
     size_t   history_depth;     // M; [1, 64]
     size_t   passes;            // T; 0 means T = N
     uint64_t ic_seed;           // s₀ draw; separate from seed
+    float    output_scale;      // presentation gain on the returned cube; > 0; default 1
 };
 
 class Encoder
@@ -140,21 +142,35 @@ class Encoder
 public:
     static std::unique_ptr<Encoder> Create(const EncoderConfig& cfg);
 
-    // One episode. x is not modified. Newest slice, N floats,
-    // valid until the next RunEpisode.
+    // One episode. x is not modified. Newest slice times output_scale,
+    // N floats, valid until the next RunEpisode. Delay line stays raw.
     const float* RunEpisode(std::span<const float> x);
+    const float* RawCube() const;          // unscaled newest slice
+    const float* ScaledCube() const;       // RunEpisode return; raw * output_scale
+
+    float SuggestOutputScale(float target_rms = 1.f) const;
+    float SuggestOutputScale(std::span<const float> fields, float target_rms = 1.f);
+    void FitOutputScale(float target_rms = 1.f);
+    void FitOutputScale(std::span<const float> fields, float target_rms = 1.f);
+    float OutputScale() const;
+    void SetOutputScale(float scale);
 
     size_t Size() const;                   // N
     EncoderConfig Config() const;          // passes already resolved
     float RealizedSpectralRadius() const;
 };
+
+float MeanAbs(std::span<const float> x);   // 0 if empty
+float Rms(std::span<const float> x);       // 0 if empty
+float SuggestedOutputScale(std::span<const float> raw, float target_rms = 1.f);
 ```
 
 Validation at Create: dim in [5, 24], spectral radius finite and
 positive, leak rate finite and in (0, 1], input scaling finite,
-history depth in [1, 64]. The finiteness test is on the bits, since
-std::isfinite is unreliable under fast-math. `passes = 0` is stored as
-N. RunEpisode throws if x is not length N.
+output_scale finite and > 0, history depth in [1, 64]. The finiteness
+test is on the bits, since std::isfinite is unreliable under
+fast-math. `passes = 0` is stored as N. RunEpisode throws if x is not
+length N. SuggestedOutputScale is target_rms / rms(raw), not 1/max.
 
 ## Contract summary
 
@@ -162,8 +178,10 @@ N. RunEpisode throws if x is not length N.
   anything.
 - RunEpisode always reloads s₀ first. Episodes do not chain.
 - The caller's field is not modified. The drive is built in scratch.
-- The pointer from RunEpisode is the newest slice, N floats, and is
-  invalid after the next RunEpisode.
+- The pointer from RunEpisode is the newest slice times output_scale,
+  N floats, and is invalid after the next RunEpisode. RawCube is the
+  unscaled delay-line slice; ScaledCube is the same pointer RunEpisode
+  returned. MeanAbs and Rms measure any span.
 - Config reports the resolved T, not a stored 0.
 - Compression is the k-face the caller keeps. The encoder always
   returns N.

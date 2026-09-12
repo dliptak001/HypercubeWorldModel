@@ -67,16 +67,6 @@ target_link_libraries(JepaPredictorTest PRIVATE Encoder Predictor)
 add_executable(WorldModelTest tests/WorldModelTest.cpp)
 target_link_libraries(WorldModelTest PRIVATE WorldModel ThreadPool)
 
-add_executable(TerrainWalkerTest
-    tests/TerrainWalker/TerrainWalkerTest.cpp
-    tests/TerrainWalker/Map.cpp
-    tests/TerrainWalker/Walker.cpp
-    tests/TerrainWalker/ActionField.cpp)
-target_include_directories(TerrainWalkerTest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/TerrainWalker)
-target_link_libraries(TerrainWalkerTest PRIVATE WorldModel ThreadPool)
-
 if(MINGW)
     target_link_options(HypercubeWorldModel PRIVATE -static-libgcc -static-libstdc++)
     target_link_options(quick_start PRIVATE -static-libgcc -static-libstdc++)
@@ -84,5 +74,4 @@ if(MINGW)
     target_link_options(JepaEncoderTest PRIVATE -static-libgcc -static-libstdc++)
     target_link_options(JepaPredictorTest PRIVATE -static-libgcc -static-libstdc++)
     target_link_options(WorldModelTest PRIVATE -static-libgcc -static-libstdc++)
-    target_link_options(TerrainWalkerTest PRIVATE -static-libgcc -static-libstdc++)
 endif()

@@ -1,4 +1,5 @@
 cmake-build-*/
+UPGRADE_TASKS.md
 *.wm
 *.dec
 *.bin

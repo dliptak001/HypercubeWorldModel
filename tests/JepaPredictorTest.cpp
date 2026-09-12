@@ -109,16 +109,6 @@ static float MeanSquare(std::span<const float> a)
     return s / static_cast<float>(a.size());
 }
 
-static double MeanAbs(std::span<const float> x)
-{
-    if (x.empty())
-        return 0.0;
-    double a = 0.0;
-    for (float v : x)
-        a += std::fabs(static_cast<double>(v));
-    return a / static_cast<double>(x.size());
-}
-
 struct SineTerm
 {
     float cycles = 0.f;
@@ -281,17 +271,17 @@ int main()
     }
 
     {
-        const float* z = enc->RunEpisode(std::span(stream.data(), n));
+        enc->RunEpisode(std::span(stream.data(), n));
         std::printf("JepaPredictorTest: stage mean|value| after first train window\n");
         std::printf("JepaPredictorTest:   Field (window on the cube)             "
                     "mean|x|=%.4g  (N=%zu)\n",
-                    MeanAbs(std::span(stream.data(), n)), n);
+                    static_cast<double>(MeanAbs(std::span(stream.data(), n))), n);
         std::printf("JepaPredictorTest:   Encoder output (full cube, age 0)      "
                     "mean|z|=%.4g  (N=%zu)\n",
-                    MeanAbs(std::span(z, n)), n);
+                    static_cast<double>(MeanAbs(std::span(enc->RawCube(), n))), n);
         std::printf("JepaPredictorTest:   Encoder k-face (Predictor in/out)      "
                     "mean|s|=%.4g  (sub=%zu)\n",
-                    MeanAbs(train.z[0]), sub);
+                    static_cast<double>(MeanAbs(train.z[0])), sub);
         std::fflush(stdout);
     }
 

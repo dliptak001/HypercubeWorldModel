@@ -139,12 +139,25 @@ PYBIND11_MODULE(_core, m)
     }, py::arg("src"), py::arg("size"),
        "Lay a short vector onto a field of the given size as contiguous stripes.");
 
+    m.def("mean_abs", [](FloatArray x) {
+        const auto b = x.request();
+        return MeanAbs(std::span<const float>(static_cast<const float*>(b.ptr),
+                                              static_cast<size_t>(b.size)));
+    }, py::arg("x"), "Mean of absolute values.");
+
+    m.def("rms", [](FloatArray x) {
+        const auto b = x.request();
+        return Rms(std::span<const float>(static_cast<const float*>(b.ptr),
+                                          static_cast<size_t>(b.size)));
+    }, py::arg("x"), "Root-mean-square.");
+
     // ── WorldModel ──
 
     py::class_<WorldModel>(m, "_WorldModel")
-        .def(py::init([](size_t dim, size_t k, float action_scale,
+        .def(py::init([](size_t dim, size_t k,
                          uint64_t encoder_seed, uint64_t ic_seed,
                          float spectral_radius, float leak_rate, float input_scaling,
+                         float output_scale,
                          size_t history_depth, size_t passes,
                          size_t z_max, size_t gather_span, bool tanh_last, uint64_t seed,
                          float lr, float lr_min_frac, int lr_decay_epochs, bool restore_best,
@@ -156,10 +169,10 @@ PYBIND11_MODULE(_core, m)
             cfg.encoder.spectral_radius = spectral_radius;
             cfg.encoder.leak_rate = leak_rate;
             cfg.encoder.input_scaling = input_scaling;
+            cfg.encoder.output_scale = output_scale;
             cfg.encoder.history_depth = history_depth;
             cfg.encoder.passes = passes;
             cfg.k = k;
-            cfg.action_scale = action_scale;
             cfg.predictor.z_max = z_max;
             cfg.predictor.gather_span = gather_span;
             cfg.predictor.tanh_last = tanh_last;
@@ -168,9 +181,10 @@ PYBIND11_MODULE(_core, m)
                                                   restore_best, beta1, beta2, eps);
             return WorldModel::Create(cfg);
         }),
-            py::arg("dim"), py::arg("k"), py::arg("action_scale"),
+            py::arg("dim"), py::arg("k"),
             py::arg("encoder_seed"), py::arg("ic_seed"),
             py::arg("spectral_radius"), py::arg("leak_rate"), py::arg("input_scaling"),
+            py::arg("output_scale"),
             py::arg("history_depth"), py::arg("passes"),
             py::arg("z_max"), py::arg("gather_span"), py::arg("tanh_last"), py::arg("seed"),
             py::arg("lr"), py::arg("lr_min_frac"), py::arg("lr_decay_epochs"),
@@ -189,12 +203,13 @@ PYBIND11_MODULE(_core, m)
             py::dict d;
             d["dim"] = c.encoder.dim;
             d["k"] = c.k;
-            d["action_scale"] = c.action_scale;
             d["encoder_seed"] = c.encoder.seed;
             d["ic_seed"] = c.encoder.ic_seed;
             d["spectral_radius"] = c.encoder.spectral_radius;
             d["leak_rate"] = c.encoder.leak_rate;
             d["input_scaling"] = c.encoder.input_scaling;
+            d["output_scale"] = self.ViewOutputScale();
+            d["action_output_scale"] = self.ActionOutputScale();
             d["history_depth"] = c.encoder.history_depth;
             d["passes"] = self.RequestedPasses();   // as given, 0 included; not the resolved T
             d["z_max"] = c.predictor.z_max;          // resolved: 0 already replaced by k+1
@@ -207,6 +222,35 @@ PYBIND11_MODULE(_core, m)
             return d;
         }, "Constructor knobs that rebuild this model. passes is as given "
            "(0 stays 0); z_max is resolved.")
+
+        .def("view_output_scale", &WorldModel::ViewOutputScale)
+        .def("action_output_scale", &WorldModel::ActionOutputScale)
+        .def("set_view_output_scale", &WorldModel::SetViewOutputScale, py::arg("scale"))
+        .def("set_action_output_scale", &WorldModel::SetActionOutputScale, py::arg("scale"))
+        .def("suggest_view_output_scale", [](const WorldModel& self, FloatArray z, float target_rms) {
+            const auto b = z.request();
+            const auto* p = static_cast<const float*>(b.ptr);
+            return self.SuggestViewOutputScale(
+                std::span<const float>(p, static_cast<size_t>(b.size)), target_rms);
+        }, py::arg("z"), py::arg("target_rms") = 1.f)
+        .def("suggest_action_output_scale", [](const WorldModel& self, FloatArray za, float target_rms) {
+            const auto b = za.request();
+            const auto* p = static_cast<const float*>(b.ptr);
+            return self.SuggestActionOutputScale(
+                std::span<const float>(p, static_cast<size_t>(b.size)), target_rms);
+        }, py::arg("za"), py::arg("target_rms") = 1.f)
+        .def("fit_view_output_scale", [](WorldModel& self, FloatArray z, float target_rms) {
+            const auto b = z.request();
+            const auto* p = static_cast<const float*>(b.ptr);
+            self.FitViewOutputScale(
+                std::span<const float>(p, static_cast<size_t>(b.size)), target_rms);
+        }, py::arg("z"), py::arg("target_rms") = 1.f)
+        .def("fit_action_output_scale", [](WorldModel& self, FloatArray za, float target_rms) {
+            const auto b = za.request();
+            const auto* p = static_cast<const float*>(b.ptr);
+            self.FitActionOutputScale(
+                std::span<const float>(p, static_cast<size_t>(b.size)), target_rms);
+        }, py::arg("za"), py::arg("target_rms") = 1.f)
 
         .def("encode", [](WorldModel& self, FloatArray fields) {
             const size_t n = self.FieldSize(), c = self.CodeSize();
@@ -224,7 +268,15 @@ PYBIND11_MODULE(_core, m)
 
         .def("last_cube", [](const WorldModel& self) {
             return PointerToArray(self.LastCube(), self.FieldSize());
-        }, "Full episode behind the most recent encode, length field_size.")
+        }, "Scaled full view episode behind the most recent encode.")
+
+        .def("last_raw_cube", [](const WorldModel& self) {
+            return PointerToArray(self.LastRawCube(), self.FieldSize());
+        }, "Unscaled full view episode behind the most recent encode.")
+
+        .def("last_packed", [](const WorldModel& self) {
+            return PointerToArray(self.LastPacked(), 2 * self.CodeSize());
+        }, "Packed E(x) then E(a) from the most recent predict or accumulate.")
 
         .def("encode_action", [](WorldModel& self, FloatArray pictures) {
             const size_t c = self.CodeSize();

@@ -6,7 +6,7 @@ installed package.
 | Script | What it shows |
 |--------|----------------|
 | [plane_point.py](plane_point.py) | A point on a plane moved by a bounded velocity: encode, fit with a validation set, a held-out score against the identity guess, rollout, a Decoder beside the model, and a save and load round trip |
-| [plan_toy.py](plan_toy.py) | DMC protocol adapter (encode, encode_action, predict, rollout on raw actions, cost, action_space) driving CEM to a goal on the same toy world |
+| [plan_toy.py](plan_toy.py) | Planner adapter (encode, encode_action, predict, rollout on raw actions, cost, action_space) driving CEM to a goal on the same toy world |
 
 ## How to run
 
@@ -26,8 +26,8 @@ python python/examples/plan_toy.py
 
 ## What these are not
 
-- **Not** the C++ programs (the smoke test, quick_start, WorldModelTest,
-  TerrainWalkerTest) or the study write-ups. Those live under
+- **Not** the C++ programs (the smoke test, quick_start, WorldModelTest)
+  or the study write-ups. Those live under
   [tests/](../../tests/) and [docs/](../../docs/).
 - **Not** automated tests. Package tests are
   [tests/test_basic.py](../tests/test_basic.py).

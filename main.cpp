@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -34,10 +35,10 @@ int main()
     {
         const EncoderConfig c = enc->Config();
         std::printf("[Encoder DIM=%zu M=%zu seed=%llu leak=%.3g in_scale=%.3g "
-                    "SR target=%.4f post=%.4f]\n",
+                    "out_scale=%.3g SR target=%.4f post=%.4f]\n",
                     c.dim, c.history_depth,
                     static_cast<unsigned long long>(c.seed), c.leak_rate,
-                    c.input_scaling, c.spectral_radius,
+                    c.input_scaling, c.output_scale, c.spectral_radius,
                     enc->RealizedSpectralRadius());
     }
 
@@ -57,6 +58,14 @@ int main()
         try { EncoderConfig bad = ecfg; bad.input_scaling = nan; Encoder::Create(bad); }
         catch (const std::invalid_argument&) { ethrew = true; }
         if (!ethrew) return Fail("Encoder NaN input_scaling not rejected");
+        ethrew = false;
+        try { EncoderConfig bad = ecfg; bad.output_scale = nan; Encoder::Create(bad); }
+        catch (const std::invalid_argument&) { ethrew = true; }
+        if (!ethrew) return Fail("Encoder NaN output_scale not rejected");
+        ethrew = false;
+        try { EncoderConfig bad = ecfg; bad.output_scale = 0.f; Encoder::Create(bad); }
+        catch (const std::invalid_argument&) { ethrew = true; }
+        if (!ethrew) return Fail("Encoder zero output_scale not rejected");
     }
     const size_t n = enc->Size();
 
@@ -108,6 +117,47 @@ int main()
         const float* again = enc->RunEpisode(fields[0]);
         for (size_t i = 0; i < sub; ++i)
             if (again[i] != subcubes[0][i]) return Fail("RunEpisode not repeatable");
+    }
+
+    // output_scale is presentation: scale 2 doubles the return, not the raw cube.
+    {
+        EncoderConfig scfg = ecfg;
+        scfg.output_scale = 2.f;
+        auto enc2 = Encoder::Create(scfg);
+        const float* a = enc->RunEpisode(fields[0]);
+        const float* b = enc2->RunEpisode(fields[0]);
+        const float* raw_a = enc->RawCube();
+        const float* raw_b = enc2->RawCube();
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (raw_a[i] != raw_b[i]) return Fail("output_scale changed raw dynamics");
+            if (b[i] != 2.f * a[i]) return Fail("output_scale 2 did not double the return");
+        }
+        const float before = enc->OutputScale();
+        const float suggested = enc->SuggestOutputScale();
+        if (enc->OutputScale() != before) return Fail("SuggestOutputScale mutated the Encoder");
+        if (!(suggested > 0.f)) return Fail("SuggestOutputScale not positive");
+    }
+
+    {
+        std::vector<float> quiet(n, 0.2f);
+        if (MeanAbs(quiet) != 0.2f) return Fail("MeanAbs 0.2");
+        if (Rms(quiet) != 0.2f) return Fail("Rms 0.2");
+        if (MeanAbs({}) != 0.f || Rms({}) != 0.f) return Fail("MeanAbs/Rms empty");
+        const float s = SuggestedOutputScale(quiet, 1.f);
+        if (s != 5.f) return Fail("SuggestedOutputScale 0.2 -> 5");
+        bool sthr = false;
+        try { (void)SuggestedOutputScale({}, 1.f); }
+        catch (const std::invalid_argument&) { sthr = true; }
+        if (!sthr) return Fail("SuggestedOutputScale empty not rejected");
+        sthr = false;
+        try { (void)SuggestedOutputScale(std::vector<float>(n, 0.f), 1.f); }
+        catch (const std::invalid_argument&) { sthr = true; }
+        if (!sthr) return Fail("SuggestedOutputScale all-zero not rejected");
+        enc->FitOutputScale();
+        if (enc->OutputScale() != enc->SuggestOutputScale())
+            return Fail("FitOutputScale did not match Suggest");
+        enc->SetOutputScale(1.f);
     }
 
     DecoderConfig dcfg;
@@ -299,12 +349,69 @@ int main()
         threw = false;
         try
         {
-            WorldModelConfig bad = wcfg;
-            bad.action_scale = std::bit_cast<float>(0x7fc00000u);
-            WorldModel::Create(bad);
+            wm->SetViewOutputScale(std::bit_cast<float>(0x7fc00000u));
         }
         catch (const std::invalid_argument&) { threw = true; }
-        if (!threw) return Fail("WorldModel NaN action_scale not rejected");
+        if (!threw) return Fail("WorldModel NaN view output_scale not rejected");
+        wm->SetViewOutputScale(2.f);
+        wm->SetActionOutputScale(3.f);
+        if (wm->ViewOutputScale() != 2.f || wm->ActionOutputScale() != 3.f)
+            return Fail("WorldModel independent output_scales");
+        {
+            std::vector<float> z(sub, 1.f), a(sub, 1.f), packed(2 * sub);
+            wm->Pack(z, a, packed);
+            if (packed[sub] != 1.f) return Fail("WorldModel Pack is not concat");
+        }
+        wm->SetViewOutputScale(1.f);
+        wm->SetActionOutputScale(1.f);
+
+        // v1 files: action_scale becomes the action encoder's output_scale.
+        {
+            const std::filesystem::path v1file =
+                std::filesystem::temp_directory_path() / "hypercube_world_model_v1.wm";
+            {
+                std::ofstream os(v1file, std::ios::binary);
+                const char magic[4] = {'H', 'W', 'M', '1'};
+                os.write(magic, 4);
+                const auto wr = [&os](auto v) {
+                    os.write(reinterpret_cast<const char*>(&v), sizeof(v));
+                };
+                const EncoderConfig& e = wm->Config().encoder;
+                wr(uint32_t{1});
+                wr(static_cast<uint64_t>(e.dim));
+                wr(static_cast<uint64_t>(e.seed));
+                wr(e.spectral_radius);
+                wr(e.leak_rate);
+                wr(e.input_scaling);
+                wr(static_cast<uint64_t>(e.history_depth));
+                wr(static_cast<uint64_t>(wm->RequestedPasses()));
+                wr(static_cast<uint64_t>(e.ic_seed));
+                wr(static_cast<uint64_t>(wm->K()));
+                wr(0.33f);
+                wr(static_cast<uint64_t>(wm->Config().predictor.z_max));
+                wr(static_cast<uint64_t>(wm->Config().predictor.gather_span));
+                wr(static_cast<uint8_t>(wm->Config().predictor.tanh_last ? 1 : 0));
+                wr(static_cast<uint64_t>(wm->Config().predictor.seed));
+                const LCNTrainingConfig& t = wm->Config().predictor.training;
+                wr(t.lr);
+                wr(t.lr_min_frac);
+                wr(static_cast<int32_t>(t.lr_decay_epochs));
+                wr(static_cast<uint8_t>(t.restore_best ? 1 : 0));
+                wr(t.beta1);
+                wr(t.beta2);
+                wr(t.eps);
+                const auto& wts = wm->Weights();
+                wr(static_cast<uint64_t>(wts.size()));
+                os.write(reinterpret_cast<const char*>(wts.data()),
+                         static_cast<std::streamsize>(wts.size() * sizeof(float)));
+            }
+            auto v1 = WorldModel::Load(v1file);
+            std::filesystem::remove(v1file);
+            if (v1->ViewOutputScale() != 1.f)
+                return Fail("WorldModel Load v1 view output_scale");
+            if (v1->ActionOutputScale() != 0.33f)
+                return Fail("WorldModel Load v1 action output_scale");
+        }
         threw = false;
         try { std::vector<float> bad(sub / 2); wm->Encode(fields[0], bad); }
         catch (const std::invalid_argument&) { threw = true; }
