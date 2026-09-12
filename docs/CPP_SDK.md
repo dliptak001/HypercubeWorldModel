@@ -30,7 +30,7 @@ code out. The model does not remember the last view. State that has to
 persist across steps lives with the caller.
 
 The same product from Python: **[Python_SDK.md](Python_SDK.md)**.  
-The components, one by one: [encoder.md](encoder.md) / [predictor.md](predictor.md) / [world_model.md](world_model.md) / [decoder.md](decoder.md).  
+The components, one by one: [encoder.md](encoder.md) / [lcn.md](lcn.md) / [predictor.md](predictor.md) / [world_model.md](world_model.md) / [decoder.md](decoder.md).  
 Worked programs: [examples/quick_start.cpp](../examples/quick_start.cpp)
 (WorldModel) and [examples/vector_start.cpp](../examples/vector_start.cpp)
 (VectorModel).

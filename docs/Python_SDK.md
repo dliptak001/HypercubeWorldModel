@@ -52,7 +52,7 @@ code out. The model does not remember the last view. State that has to
 persist across steps lives with the caller.
 
 C++ core and contracts: **[CPP_SDK.md](CPP_SDK.md)**.  
-The components, one by one: [encoder.md](encoder.md) / [predictor.md](predictor.md) / [world_model.md](world_model.md) / [decoder.md](decoder.md).  
+The components, one by one: [encoder.md](encoder.md) / [lcn.md](lcn.md) / [predictor.md](predictor.md) / [world_model.md](world_model.md) / [decoder.md](decoder.md).  
 PyPI-facing package story: **[python/README.md](../python/README.md)**.  
 Package version: single source python/hypercube_worldmodel/_version.py.
 The wheel metadata, hypercube_worldmodel.__version__, and the compiled

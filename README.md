@@ -271,6 +271,7 @@ Python contract tests are
 [python/tests/test_basic.py](python/tests/test_basic.py).
 
 The component specifications are [docs/encoder.md](docs/encoder.md),
+[docs/lcn.md](docs/lcn.md),
 [docs/predictor.md](docs/predictor.md),
 [docs/decoder.md](docs/decoder.md), and
 [docs/world_model.md](docs/world_model.md).

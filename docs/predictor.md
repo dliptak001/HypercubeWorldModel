@@ -9,7 +9,7 @@
 | Predictor | This component: map one k-face to a predicted next k-face. |
 | Encoder | The frozen hypercube reservoir in Encoder/, specified in [encoder.md](encoder.md). |
 | Decoder | Reconstruction meter in Decoder/. Not part of this map and not used to train it. |
-| LCN | Locally connected net on a Boolean hypercube, in LCN/. The Predictor owns one. |
+| LCN | Locally connected net on a Boolean hypercube, in LCN/, specified in [lcn.md](lcn.md). The Predictor owns one. |
 | LCNTraining | The LCN's gradient trainer (backprop through every depth, Adam). The Predictor owns one. |
 | k | Dimension of the encoder face kept as the latent. Strictly less than the Encoder's dim. |
 | dim | Dimension of the Predictor's own cube. Not the Encoder's dim. Equal to k when the caller already sliced to the k-face; WorldModel uses dim = k+1. |

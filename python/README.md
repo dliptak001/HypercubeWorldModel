@@ -474,6 +474,7 @@ trip against the C++ file format. The C++ smoke is
 
 The component specifications are
 [docs/encoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/encoder.md),
+[docs/lcn.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/lcn.md),
 [docs/predictor.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/predictor.md),
 [docs/decoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/decoder.md), and
 [docs/world_model.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model.md).
@@ -488,6 +489,7 @@ The component specifications are
 | [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/CPP_SDK.md) | Native library guide (same product, C++) |
 | [Project README](https://github.com/dliptak001/HypercubeWorldModel#readme) | Product story and the C++ SDK from the repo root |
 | [docs/encoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/encoder.md) | The frozen encoder episode and its knobs |
+| [docs/lcn.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/lcn.md) | The locally connected net Predictor and Decoder own |
 | [docs/predictor.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/predictor.md) | The Predictor and its training cycle |
 | [docs/world_model.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/world_model.md) | The WorldModel class, the action path, persistence. VectorModel sits beside it |
 | [docs/decoder.md](https://github.com/dliptak001/HypercubeWorldModel/blob/master/docs/decoder.md) | The Decoder class and its file format |

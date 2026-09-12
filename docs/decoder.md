@@ -8,7 +8,7 @@
 |---------------|---------|
 | Decoder | This component: invert a compressed encoder state. Subcube in, full cube out. |
 | Encoder | The frozen hypercube reservoir in Encoder/, specified in [encoder.md](encoder.md). |
-| LCN | Locally connected net on a Boolean hypercube, in LCN/. The Decoder owns one. |
+| LCN | Locally connected net on a Boolean hypercube, in LCN/, specified in [lcn.md](lcn.md). The Decoder owns one. |
 | LCNTraining | The LCN's gradient trainer (backprop through every depth, Adam). The Decoder owns one. |
 | dim | Dimension of the output cube. Same dim as the encoder it is paired with. |
 | N | Number of vertices, N = 2ᵈⁱᵐ. Length of the reconstructed field. |
