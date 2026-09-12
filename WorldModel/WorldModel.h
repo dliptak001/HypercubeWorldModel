@@ -156,7 +156,8 @@ public:
 
     /// Unscaled full view episode from the most recent Encode. Length
     /// FieldSize(). Valid until the next Encode. The raw k-face is the
-    /// first CodeSize() of this cube.
+    /// first CodeSize() of this cube. The encoder snapshots its input,
+    /// so a span of this pointer may be passed to Encode.
     /// @throws std::invalid_argument if Encode has not been called.
     [[nodiscard]] const float* LastRawCube() const;
 

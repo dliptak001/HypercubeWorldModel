@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -97,6 +98,66 @@ void RequireSameRows(size_t a, size_t b, const char* what)
     if (a != b)
         throw std::invalid_argument(std::string(what) + ": row counts differ ("
                                     + std::to_string(a) + " vs " + std::to_string(b) + ")");
+}
+
+void RequireShape2D(const py::buffer_info& b, size_t rows, size_t cols, const char* what)
+{
+    if (b.ndim != 2)
+        throw std::invalid_argument(std::string(what) + " must be 2-D");
+    if (static_cast<size_t>(b.shape[0]) != rows || static_cast<size_t>(b.shape[1]) != cols)
+        throw std::invalid_argument(
+            std::string(what) + " shape must be (" + std::to_string(rows) + ", "
+            + std::to_string(cols) + "), got (" + std::to_string(b.shape[0]) + ", "
+            + std::to_string(b.shape[1]) + ")");
+}
+
+// Caller dst: None allocates; else writeable C-contiguous float32 of exact shape.
+struct OutBuf
+{
+    py::array arr;
+    float* ptr;
+};
+
+OutBuf ResolveOut(const std::optional<py::array>& given,
+                  std::initializer_list<py::ssize_t> shape,
+                  const char* what)
+{
+    std::vector<py::ssize_t> want(shape);
+    if (!given)
+    {
+        py::array_t<float> a(want);
+        float* p = a.mutable_data();
+        return {std::move(a), p};
+    }
+    py::array a = *given;
+    if (!a.dtype().is(py::dtype::of<float>()))
+        throw std::invalid_argument(std::string(what) + " must be float32");
+    py::buffer_info b;
+    try
+    {
+        b = a.request(/*writable=*/true);
+    }
+    catch (const std::exception&)
+    {
+        throw std::invalid_argument(std::string(what) + " must be writeable");
+    }
+    if (static_cast<size_t>(b.ndim) != want.size())
+        throw std::invalid_argument(std::string(what) + " has the wrong number of dimensions");
+    for (size_t i = 0; i < want.size(); ++i)
+    {
+        if (b.shape[i] != want[i])
+            throw std::invalid_argument(std::string(what) + " shape mismatch");
+    }
+    py::ssize_t expect = static_cast<py::ssize_t>(sizeof(float));
+    for (int d = b.ndim - 1; d >= 0; --d)
+    {
+        if (b.shape[d] == 0)
+            break;
+        if (b.strides[d] != expect)
+            throw std::invalid_argument(std::string(what) + " must be C-contiguous");
+        expect *= b.shape[d];
+    }
+    return {std::move(a), static_cast<float*>(b.ptr)};
 }
 
 py::dict TrainingDict(const LCNTrainingConfig& t)
@@ -260,53 +321,61 @@ PYBIND11_MODULE(_core, m)
                 std::span<const float>(p, static_cast<size_t>(b.size)), target_rms);
         }, py::arg("za"), py::arg("target_rms") = 1.f)
 
-        .def("encode", [](WorldModel& self, FloatArray fields) {
+        .def("encode", [](WorldModel& self, FloatArray fields, std::optional<py::array> out_opt) {
             const size_t n = self.FieldSize(), c = self.CodeSize();
             const Rows in = AsRows(fields, n, "fields");
-            py::array_t<float> out = Matrix(in.count, c);
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(in.count), static_cast<py::ssize_t>(c)}, "encode out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < in.count; ++i)
                     self.Encode(std::span<const float>(in.data + i * n, n),
                                 std::span<float>(o + i * c, c));
             }
-            return out;
-        }, py::arg("fields"), "View codes, one row per field. Shape (rows, code_size).")
+            return out.arr;
+        }, py::arg("fields"), py::arg("out").noconvert() = py::none(),
+           "View codes, one row per field. Shape (rows, code_size).")
 
         .def("last_cube", [](const WorldModel& self) {
             return PointerToArray(self.LastCube(), self.FieldSize());
-        }, "Scaled full view episode behind the most recent encode.")
+        }, "Copy of the scaled full view episode behind the most recent encode. "
+           "After a batched encode, the last row only.")
 
         .def("last_raw_cube", [](const WorldModel& self) {
             return PointerToArray(self.LastRawCube(), self.FieldSize());
-        }, "Unscaled full view episode behind the most recent encode.")
+        }, "Copy of the unscaled full view episode behind the most recent encode. "
+           "After a batched encode, the last row only.")
 
         .def("last_packed", [](const WorldModel& self) {
             return PointerToArray(self.LastPacked(), 2 * self.CodeSize());
         }, "Packed E(x) then E(a) from the most recent predict or accumulate.")
 
-        .def("encode_action", [](WorldModel& self, FloatArray pictures) {
+        .def("encode_action", [](WorldModel& self, FloatArray pictures, std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize();
             const Rows in = AsRows(pictures, c, "pictures");
-            py::array_t<float> out = Matrix(in.count, c);
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(in.count), static_cast<py::ssize_t>(c)},
+                "encode_action out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < in.count; ++i)
                     self.EncodeAction(std::span<const float>(in.data + i * c, c),
                                       std::span<float>(o + i * c, c));
             }
-            return out;
-        }, py::arg("pictures"), "Action codes, one row per picture. Shape (rows, code_size).")
+            return out.arr;
+        }, py::arg("pictures"), py::arg("out").noconvert() = py::none(),
+           "Action codes, one row per picture. Shape (rows, code_size).")
 
-        .def("predict", [](WorldModel& self, FloatArray z, FloatArray za) {
+        .def("predict", [](WorldModel& self, FloatArray z, FloatArray za, std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize();
             const Rows zi = AsRows(z, c, "z");
             const Rows ai = AsRows(za, c, "za");
             RequireSameRows(zi.count, ai.count, "predict");
-            py::array_t<float> out = Matrix(zi.count, c);
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(zi.count), static_cast<py::ssize_t>(c)}, "predict out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < zi.count; ++i)
@@ -314,10 +383,12 @@ PYBIND11_MODULE(_core, m)
                                  std::span<const float>(ai.data + i * c, c),
                                  std::span<float>(o + i * c, c));
             }
-            return out;
-        }, py::arg("z"), py::arg("za"), "Predicted next view codes, one row per pair.")
+            return out.arr;
+        }, py::arg("z"), py::arg("za"), py::arg("out").noconvert() = py::none(),
+           "Predicted next view codes, one row per pair.")
 
-        .def("rollout", [](WorldModel& self, FloatArray z0, FloatArray actions) {
+        .def("rollout", [](WorldModel& self, FloatArray z0, FloatArray actions,
+                           std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize();
             const Rows zi = AsRows(z0, c, "z0");
             const auto ab = actions.request();
@@ -330,10 +401,10 @@ PYBIND11_MODULE(_core, m)
                                             + std::to_string(c));
             RequireSameRows(zi.count, rows, "rollout");
             const float* a = static_cast<const float*>(ab.ptr);
-            py::array_t<float> out({static_cast<py::ssize_t>(rows),
-                                    static_cast<py::ssize_t>(h + 1),
-                                    static_cast<py::ssize_t>(c)});
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(h + 1),
+                 static_cast<py::ssize_t>(c)}, "rollout out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < rows; ++i)
@@ -341,23 +412,27 @@ PYBIND11_MODULE(_core, m)
                                  std::span<const float>(a + i * h * c, h * c),
                                  std::span<float>(o + i * (h + 1) * c, (h + 1) * c));
             }
-            return out;
-        }, py::arg("z0"), py::arg("actions"),
+            return out.arr;
+        }, py::arg("z0"), py::arg("actions"), py::arg("out").noconvert() = py::none(),
            "Chain predict over H action codes per row. Shape (rows, H + 1, code_size).")
 
-        .def("pack", [](const WorldModel& self, FloatArray z, FloatArray za) {
+        .def("pack", [](const WorldModel& self, FloatArray z, FloatArray za,
+                        std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize();
             const Rows zi = AsRows(z, c, "z");
             const Rows ai = AsRows(za, c, "za");
             RequireSameRows(zi.count, ai.count, "pack");
-            py::array_t<float> out = Matrix(zi.count, 2 * c);
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(zi.count), static_cast<py::ssize_t>(2 * c)},
+                "pack out");
+            float* o = out.ptr;
             for (size_t i = 0; i < zi.count; ++i)
                 self.Pack(std::span<const float>(zi.data + i * c, c),
                           std::span<const float>(ai.data + i * c, c),
                           std::span<float>(o + i * 2 * c, 2 * c));
-            return out;
-        }, py::arg("z"), py::arg("za"), "What the Predictor sees, one row per pair.")
+            return out.arr;
+        }, py::arg("z"), py::arg("za"), py::arg("out").noconvert() = py::none(),
+           "What the Predictor sees, one row per pair.")
 
         .def("begin_batch", &WorldModel::BeginBatch,
              "Clear the accumulated gradient. Call at the start of each batch.")
@@ -469,19 +544,21 @@ PYBIND11_MODULE(_core, m)
             return d;
         }, "Constructor knobs that rebuild this decoder. z_max is resolved.")
 
-        .def("decode", [](Decoder& self, FloatArray codes) {
+        .def("decode", [](Decoder& self, FloatArray codes, std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize(), n = self.FieldSize();
             const Rows in = AsRows(codes, c, "codes");
-            py::array_t<float> out = Matrix(in.count, n);
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(in.count), static_cast<py::ssize_t>(n)}, "decode out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < in.count; ++i)
                     self.Decode(std::span<const float>(in.data + i * c, c),
                                 std::span<float>(o + i * n, n));
             }
-            return out;
-        }, py::arg("codes"), "Reconstructed fields, one row per code. Shape (rows, field_size).")
+            return out.arr;
+        }, py::arg("codes"), py::arg("out").noconvert() = py::none(),
+           "Reconstructed fields, one row per code. Shape (rows, field_size).")
 
         .def("begin_batch", &Decoder::BeginBatch,
              "Clear the accumulated gradient. Call at the start of each batch.")
@@ -638,7 +715,8 @@ PYBIND11_MODULE(_core, m)
                      epochs, batch, za_span);
         }, py::arg("z"), py::arg("y"), py::arg("za") = py::none(),
             py::arg("epochs") = 40, py::arg("batch") = 32)
-        .def("predict", [](const Head& self, FloatArray z, std::optional<FloatArray> za) {
+        .def("predict", [](const Head& self, FloatArray z, std::optional<FloatArray> za,
+                           std::optional<py::array> out_opt) {
             const auto zb = z.request();
             if (zb.ndim != 2)
                 throw std::invalid_argument("Head.predict z must be 2-D (count, code)");
@@ -651,14 +729,14 @@ PYBIND11_MODULE(_core, m)
                 za_span = std::span<const float>(static_cast<const float*>(ab.ptr),
                                                  static_cast<size_t>(ab.size));
             }
-            py::array_t<float> out(static_cast<py::ssize_t>(count));
+            OutBuf out = ResolveOut(out_opt, {static_cast<py::ssize_t>(count)}, "predict out");
             {
                 py::gil_scoped_release release;
                 self.Predict(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
-                             std::span<float>(out.mutable_data(), count), za_span);
+                             std::span<float>(out.ptr, count), za_span);
             }
-            return out;
-        }, py::arg("z"), py::arg("za") = py::none())
+            return out.arr;
+        }, py::arg("z"), py::arg("za") = py::none(), py::arg("out").noconvert() = py::none())
         .def("score", [](const Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za) {
             const auto zb = z.request(), yb = y.request();
             std::span<const float> za_span{};
@@ -687,22 +765,22 @@ PYBIND11_MODULE(_core, m)
             }
             return d;
         }, py::arg("z"), py::arg("y"), py::arg("za") = py::none())
-        .def("plan_cost", [](const Head& self, FloatArray zs) {
+        .def("plan_cost", [](const Head& self, FloatArray zs, std::optional<py::array> out_opt) {
             const auto b = zs.request();
             if (b.ndim != 3)
                 throw std::invalid_argument("plan_cost zs must be 3-D (B, H+1, code)");
             const size_t batch = static_cast<size_t>(b.shape[0]);
             const size_t h1 = static_cast<size_t>(b.shape[1]);
             const size_t code = static_cast<size_t>(b.shape[2]);
-            py::array_t<float> out(static_cast<py::ssize_t>(batch));
+            OutBuf out = ResolveOut(out_opt, {static_cast<py::ssize_t>(batch)}, "plan_cost out");
             {
                 py::gil_scoped_release release;
                 self.PlanCost(std::span<const float>(static_cast<const float*>(b.ptr),
                                                      batch * h1 * code),
-                              std::span<float>(out.mutable_data(), batch));
+                              std::span<float>(out.ptr, batch));
             }
-            return out;
-        }, py::arg("zs"))
+            return out.arr;
+        }, py::arg("zs"), py::arg("out").noconvert() = py::none())
         .def_static("from_state", [](const std::string& sign, uint64_t seed, size_t z_max,
                                      size_t gather_span, bool tanh_last, float lr,
                                      float lr_min_frac, bool restore_best, bool uses_za,
@@ -816,49 +894,54 @@ PYBIND11_MODULE(_core, m)
         .def_property_readonly("act_dim", &VectorModel::ActDim)
         .def("set_obs_dim", &VectorModel::SetObsDim)
         .def("set_act_dim", &VectorModel::SetActDim)
-        .def("encode", [](VectorModel& self, FloatArray obs) {
+        .def("encode", [](VectorModel& self, FloatArray obs, std::optional<py::array> out_opt) {
             const auto b = obs.request();
             if (b.ndim != 2)
                 throw std::invalid_argument("encode obs must be 2-D (count, obs_dim)");
             const size_t count = static_cast<size_t>(b.shape[0]);
             const size_t d = static_cast<size_t>(b.shape[1]);
             const size_t c = self.CodeSize();
-            py::array_t<float> out = Matrix(count, c);
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(count), static_cast<py::ssize_t>(c)}, "encode out");
             const float* p = static_cast<const float*>(b.ptr);
-            float* o = out.mutable_data();
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < count; ++i)
                     self.Encode(std::span<const float>(p + i * d, d),
                                 std::span<float>(o + i * c, c));
             }
-            return out;
-        }, py::arg("obs"))
-        .def("encode_action", [](VectorModel& self, FloatArray a) {
+            return out.arr;
+        }, py::arg("obs"), py::arg("out").noconvert() = py::none())
+        .def("encode_action", [](VectorModel& self, FloatArray a, std::optional<py::array> out_opt) {
             const auto b = a.request();
             if (b.ndim != 2)
                 throw std::invalid_argument("encode_action a must be 2-D (count, act_dim)");
             const size_t count = static_cast<size_t>(b.shape[0]);
             const size_t d = static_cast<size_t>(b.shape[1]);
             const size_t c = self.CodeSize();
-            py::array_t<float> out = Matrix(count, c);
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(count), static_cast<py::ssize_t>(c)},
+                "encode_action out");
             const float* p = static_cast<const float*>(b.ptr);
-            float* o = out.mutable_data();
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < count; ++i)
                     self.EncodeAction(std::span<const float>(p + i * d, d),
                                       std::span<float>(o + i * c, c));
             }
-            return out;
-        }, py::arg("a"))
-        .def("predict", [](VectorModel& self, FloatArray z, FloatArray za) {
+            return out.arr;
+        }, py::arg("a"), py::arg("out").noconvert() = py::none())
+        .def("predict", [](VectorModel& self, FloatArray z, FloatArray za,
+                           std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize();
             const Rows zi = AsRows(z, c, "z");
             const Rows ai = AsRows(za, c, "za");
             RequireSameRows(zi.count, ai.count, "predict");
-            py::array_t<float> out = Matrix(zi.count, c);
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(zi.count), static_cast<py::ssize_t>(c)}, "predict out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < zi.count; ++i)
@@ -866,9 +949,10 @@ PYBIND11_MODULE(_core, m)
                                  std::span<const float>(ai.data + i * c, c),
                                  std::span<float>(o + i * c, c));
             }
-            return out;
-        }, py::arg("z"), py::arg("za"))
-        .def("rollout", [](VectorModel& self, FloatArray z0, FloatArray actions) {
+            return out.arr;
+        }, py::arg("z"), py::arg("za"), py::arg("out").noconvert() = py::none())
+        .def("rollout", [](VectorModel& self, FloatArray z0, FloatArray actions,
+                           std::optional<py::array> out_opt) {
             const size_t c = self.CodeSize();
             const Rows zi = AsRows(z0, c, "z0");
             const auto ab = actions.request();
@@ -884,10 +968,10 @@ PYBIND11_MODULE(_core, m)
             if (self.ActDim() == 0)
                 self.SetActDim(ad);
             const float* a = static_cast<const float*>(ab.ptr);
-            py::array_t<float> out({static_cast<py::ssize_t>(rows),
-                                    static_cast<py::ssize_t>(h + 1),
-                                    static_cast<py::ssize_t>(c)});
-            float* o = out.mutable_data();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(h + 1),
+                 static_cast<py::ssize_t>(c)}, "rollout out");
+            float* o = out.ptr;
             {
                 py::gil_scoped_release release;
                 for (size_t i = 0; i < rows; ++i)
@@ -895,9 +979,10 @@ PYBIND11_MODULE(_core, m)
                                  std::span<const float>(a + i * h * ad, h * ad),
                                  std::span<float>(o + i * (h + 1) * c, (h + 1) * c));
             }
-            return out;
-        }, py::arg("z0"), py::arg("actions"))
-        .def("cost", [](const VectorModel& self, FloatArray zs, std::optional<FloatArray> goal_z) {
+            return out.arr;
+        }, py::arg("z0"), py::arg("actions"), py::arg("out").noconvert() = py::none())
+        .def("cost", [](const VectorModel& self, FloatArray zs, std::optional<FloatArray> goal_z,
+                        std::optional<py::array> out_opt) {
             const auto b = zs.request();
             if (b.ndim != 3)
                 throw std::invalid_argument("cost zs must be 3-D (B, H+1, code)");
@@ -911,15 +996,15 @@ PYBIND11_MODULE(_core, m)
                 goal = std::span<const float>(static_cast<const float*>(gb.ptr),
                                               static_cast<size_t>(gb.size));
             }
-            py::array_t<float> out(static_cast<py::ssize_t>(batch));
+            OutBuf out = ResolveOut(out_opt, {static_cast<py::ssize_t>(batch)}, "cost out");
             {
                 py::gil_scoped_release release;
                 self.Cost(std::span<const float>(static_cast<const float*>(b.ptr),
                                                  batch * h1 * code),
-                          std::span<float>(out.mutable_data(), batch), goal);
+                          std::span<float>(out.ptr, batch), goal);
             }
-            return out;
-        }, py::arg("zs"), py::arg("goal_z") = py::none());
+            return out.arr;
+        }, py::arg("zs"), py::arg("goal_z") = py::none(), py::arg("out").noconvert() = py::none());
 
     m.def("min_dim", &MinDim, py::arg("obs_dim"));
     m.def("min_k", &MinK, py::arg("act_dim"));
@@ -959,6 +1044,9 @@ PYBIND11_MODULE(_core, m)
         const size_t nv = static_cast<size_t>(zvb.shape[0]);
         const size_t zd = static_cast<size_t>(zb.shape[1]);
         const size_t yd = static_cast<size_t>(yb.shape[1]);
+        RequireShape2D(yb, n, yd, "lin_r2 y");
+        RequireShape2D(zvb, nv, zd, "lin_r2 z_val");
+        RequireShape2D(yvb, nv, yd, "lin_r2 y_val");
         LinearR2 r;
         {
             py::gil_scoped_release release;
@@ -979,6 +1067,8 @@ PYBIND11_MODULE(_core, m)
         const auto a = z_pred.request(), b = z_true.request();
         if (a.ndim != 3 || b.ndim != 3)
             throw std::invalid_argument("rollout_error codes must be 3-D (W, H+1, code)");
+        if (a.shape[0] != b.shape[0] || a.shape[1] != b.shape[1] || a.shape[2] != b.shape[2])
+            throw std::invalid_argument("rollout_error z_pred and z_true must have the same shape");
         const size_t w = static_cast<size_t>(a.shape[0]);
         const size_t h1 = static_cast<size_t>(a.shape[1]);
         const size_t c = static_cast<size_t>(a.shape[2]);

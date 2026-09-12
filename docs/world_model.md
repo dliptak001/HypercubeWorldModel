@@ -32,7 +32,7 @@
 | batch | One BeginBatch, some Accumulate calls, one EndBatch. |
 | Pack | Concatenate two k-faces: E(x) on the first subcube, E(a) on the extra bit-face. |
 | LastCube | Scaled full view episode from the most recent Encode. Length N. |
-| LastRawCube | Unscaled full view episode from the most recent Encode. Length N. The raw k-face is the first CodeSize() of this cube. |
+| LastRawCube | Unscaled full view episode from the most recent Encode. Length N. The raw k-face is the first CodeSize() of this cube. Encode snapshots the field, so a span of this pointer may be passed back in. |
 | LastPacked | Packed E(x) then E(a) from the most recent Predict or Accumulate. Length 2 × CodeSize(). |
 | Rollout | Predict chained over H action codes: Rollout(z0, actions, out) writes H + 1 view codes, the first being z0. |
 | H | Number of action codes in a rollout. |
@@ -178,7 +178,7 @@ public:
 
     const float* Encode(std::span<const float> field, std::span<float> dst);
     const float* LastCube() const;       // scaled full view episode; until next Encode
-    const float* LastRawCube() const;    // unscaled full view episode
+    const float* LastRawCube() const;    // unscaled; Encode snapshots, span-safe
     const float* LastPacked() const;     // E(x) then E(a); after Predict / Accumulate
     const float* EncodeAction(std::span<const float> field, std::span<float> dst);
     const float* Predict(std::span<const float> z, std::span<const float> za,

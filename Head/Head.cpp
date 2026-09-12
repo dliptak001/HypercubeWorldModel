@@ -78,6 +78,7 @@ Head::Head(const Head& o)
     {
         net_ = LCN::Create(o.net_->Config());
         net_->LoadWeights(o.net_->Weights());
+        field_.assign(net_->N(), 0.f);
     }
 }
 
@@ -90,10 +91,12 @@ Head& Head::operator=(const Head& o)
         fitted_ = o.fitted_;
         code_ = o.code_;
         net_.reset();
+        field_.clear();
         if (o.net_)
         {
             net_ = LCN::Create(o.net_->Config());
             net_->LoadWeights(o.net_->Weights());
+            field_.assign(net_->N(), 0.f);
         }
     }
     return *this;
@@ -126,6 +129,16 @@ void Head::EnsureNet(size_t field_n)
                                  .z_max = cfg_.z_max,
                                  .gather_span = cfg_.gather_span,
                                  .tanh_last = cfg_.tanh_last});
+    field_.assign(field_n, 0.f);
+}
+
+float Head::ForwardOne(const float* z, const float* za) const
+{
+    if (field_.size() != net_->N())
+        field_.assign(net_->N(), 0.f);
+    Pack(z, za, field_);
+    net_->Forward(field_);
+    return Readout();
 }
 
 void Head::Pack(const float* z, const float* za, std::span<float> field) const
@@ -169,7 +182,7 @@ void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float
     tc.restore_best = cfg_.restore_best;
     LCNTraining train(*net_, tc);
 
-    std::vector<float> field(field_n), target(1);
+    std::vector<float> target(1);
     std::vector<size_t> idx(count);
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937_64 rng(cfg_.seed);
@@ -187,8 +200,9 @@ void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float
             for (size_t t = start; t < end; ++t)
             {
                 const size_t i = idx[t];
-                Pack(z.data() + i * code_size, uses_za_ ? za.data() + i * code_size : nullptr, field);
-                net_->Forward(field);
+                Pack(z.data() + i * code_size,
+                     uses_za_ ? za.data() + i * code_size : nullptr, field_);
+                net_->Forward(field_);
                 target[0] = y[i];
                 epoch_loss += static_cast<double>(train.Loss(target));
                 ++nloss;
@@ -217,13 +231,9 @@ void Head::Predict(std::span<const float> z, std::span<float> dst,
     if (uses_za_ && za.size() != count * code_)
         throw std::invalid_argument("Head::Predict za length must be count * code");
 
-    std::vector<float> field(net_->N());
     for (size_t i = 0; i < count; ++i)
-    {
-        Pack(z.data() + i * code_, uses_za_ ? za.data() + i * code_ : nullptr, field);
-        net_->Forward(field);
-        dst[i] = Readout();
-    }
+        dst[i] = ForwardOne(z.data() + i * code_,
+                            uses_za_ ? za.data() + i * code_ : nullptr);
 }
 
 Head::Score Head::ScoreOn(std::span<const float> z, std::span<const float> y,
@@ -305,20 +315,13 @@ void Head::PlanCost(std::span<const float> zs, std::span<float> out) const
         throw std::invalid_argument("Head::PlanCost needs H+1 >= 2");
 
     const size_t steps = path_len - 1;
-    std::vector<float> z(batch * steps * code_);
-    for (size_t b = 0; b < batch; ++b)
-        for (size_t t = 0; t < steps; ++t)
-            for (size_t c = 0; c < code_; ++c)
-                z[(b * steps + t) * code_ + c] =
-                    zs[(b * path_len + (t + 1)) * code_ + c];
-    std::vector<float> pred(batch * steps);
-    Predict(z, pred);
     const float sgn = cfg_.sign == Sign::Reward ? -1.f : 1.f;
     for (size_t b = 0; b < batch; ++b)
     {
         double s = 0.0;
         for (size_t t = 0; t < steps; ++t)
-            s += static_cast<double>(pred[b * steps + t]);
+            s += static_cast<double>(
+                ForwardOne(zs.data() + (b * path_len + (t + 1)) * code_, nullptr));
         out[b] = sgn * static_cast<float>(s);
     }
 }

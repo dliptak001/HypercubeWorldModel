@@ -24,7 +24,9 @@
 /// the packed cube is 2 × code_size.
 ///
 /// Copyable (clones LCN weights). Not a WorldModel member: named Heads
-/// live on VectorModel.
+/// live on VectorModel. One instance is not thread-safe for concurrent
+/// public calls: Predict, ScoreOn, and PlanCost write the LCN's
+/// forward state (logical const).
 class Head
 {
 public:
@@ -102,6 +104,7 @@ private:
     void CheckZa(bool has_za) const;
     void EnsureNet(size_t field_n);
     void Pack(const float* z, const float* za, std::span<float> field) const;
+    [[nodiscard]] float ForwardOne(const float* z, const float* za) const;
     [[nodiscard]] float Readout() const;
 
     Config cfg_{};
@@ -109,4 +112,5 @@ private:
     bool uses_za_ = false;
     bool fitted_ = false;
     size_t code_ = 0;
+    mutable std::vector<float> field_;   // packed cube; not part of copied state
 };

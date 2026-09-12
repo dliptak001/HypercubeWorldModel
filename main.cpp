@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -124,6 +125,19 @@ int main()
         const float* again = enc->RunEpisode(fields[0]);
         for (size_t i = 0; i < sub; ++i)
             if (again[i] != subcubes[0][i]) return Fail("RunEpisode not repeatable");
+    }
+
+    // RawCube aliases the delay line; RunEpisode snapshots the field first.
+    {
+        (void)enc->RunEpisode(fields[0]);
+        std::vector<float> raw(enc->RawCube(), enc->RawCube() + n);
+        const float* aliased = enc->RunEpisode(
+            std::span<const float>(enc->RawCube(), n));
+        std::vector<float> got(aliased, aliased + n);
+        const float* independent = enc->RunEpisode(raw);
+        for (size_t i = 0; i < n; ++i)
+            if (got[i] != independent[i])
+                return Fail("RunEpisode(RawCube) did not snapshot the field");
     }
 
     // output_scale is presentation: scale 2 doubles the return, not the raw cube.
@@ -286,6 +300,16 @@ int main()
             for (size_t i = 0; i < sub; ++i)
                 if (a[i] != subcubes[0][i])
                     return Fail("WorldModel Encode clobbered the other buffer");
+        }
+        {
+            std::vector<float> z_alias(sub), z_copy(sub);
+            wm->Encode(fields[0], z_alias);
+            std::vector<float> raw(wm->LastRawCube(), wm->LastRawCube() + n);
+            wm->Encode(std::span<const float>(wm->LastRawCube(), n), z_alias);
+            wm->Encode(raw, z_copy);
+            for (size_t i = 0; i < sub; ++i)
+                if (z_alias[i] != z_copy[i])
+                    return Fail("WorldModel Encode(LastRawCube) did not snapshot");
         }
         std::vector<float> a_field(n, 1.f);
         std::vector<float> za(sub);
@@ -476,6 +500,28 @@ int main()
         try { std::vector<float> dummy(n); qh.Predict(z, dummy, z); }
         catch (const std::invalid_argument&) { threw = true; }
         if (!threw) return Fail("Head za omitted path accepted za");
+
+        // PlanCost is in-place: signed sum of Predict on zs[:, 1:] (exclude z0).
+        {
+            const size_t B = 2, H1 = 4;
+            std::vector<float> zs(B * H1 * code), pred((H1 - 1) * code), step(H1 - 1), pc(B);
+            for (size_t i = 0; i < zs.size(); ++i)
+                zs[i] = z[i % (n * code)];
+            qh.PlanCost(zs, pc);
+            for (size_t b = 0; b < B; ++b)
+            {
+                for (size_t t = 0; t < H1 - 1; ++t)
+                    std::copy(zs.begin() + (b * H1 + (t + 1)) * code,
+                              zs.begin() + (b * H1 + (t + 2)) * code,
+                              pred.begin() + t * code);
+                qh.Predict(pred, step);
+                double s = 0.0;
+                for (float v : step)
+                    s += static_cast<double>(v);
+                if (std::fabs(static_cast<double>(pc[b]) - s) > 1e-5)
+                    return Fail("Head PlanCost != sum of Predict on zs[:,1:]");
+            }
+        }
     }
 
     {

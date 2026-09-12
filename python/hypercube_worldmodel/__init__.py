@@ -61,6 +61,19 @@ def _f32(a):
     return np.ascontiguousarray(a, dtype=np.float32)
 
 
+def _as_out(out, shape):
+    """Caller dst: C-contiguous writeable float32 of exact shape."""
+    if not isinstance(out, np.ndarray):
+        raise ValueError("out must be a numpy.ndarray")
+    if out.dtype != np.float32:
+        raise ValueError("out must be float32")
+    if not out.flags.c_contiguous or not out.flags.writeable:
+        raise ValueError("out must be C-contiguous and writeable")
+    if out.shape != shape:
+        raise ValueError(f"out shape must be {shape}, got {out.shape}")
+    return out
+
+
 def _rows(a, width, what):
     """Validate a (width,) or (count, width) array; return (array2d, was_1d)."""
     a = _f32(a)
@@ -208,7 +221,10 @@ class WorldModel:
     Notes
     -----
     One instance is **not thread-safe** for concurrent calls from
-    multiple host threads.
+    multiple host threads. Batched encode, encode_action, predict,
+    rollout, accumulate, and fit release the GIL for the C++ loop:
+    another Python thread may run, and must not touch this instance
+    or the arrays passed in.
 
     Every batched method accepts one row (a 1-D array) or many (a 2-D
     array with one row per sample) and returns the same shape.
@@ -263,12 +279,14 @@ class WorldModel:
 
     # ── Encode ──
 
-    def encode(self, fields) -> np.ndarray:
+    def encode(self, fields, out=None) -> np.ndarray:
         """View codes for one field ``(N,)`` or many ``(count, N)``.
 
         Returns float32 ``(code_size,)`` or ``(count, code_size)``. Codes
         depend only on the field: the encoder is frozen. A short state
         vector needs :func:`paint_stripes` first, or :class:`VectorModel`.
+        ``out`` is an optional C-contiguous writeable float32 array of
+        that shape; if given, it is filled and returned.
         """
         try:
             a, one = _rows(fields, self.N, "fields")
@@ -276,27 +294,40 @@ class WorldModel:
             raise ValueError(
                 f"{e}. Short state vectors: paint_stripes(obs, N) or VectorModel.encode"
             ) from e
-        out = self._core.encode(a)
-        return out[0] if one else out
+        if out is None:
+            got = self._core.encode(a)
+            return got[0] if one else got
+        buf = _as_out(out, (self.code_size,) if one else (a.shape[0], self.code_size))
+        self._core.encode(a, buf.reshape(a.shape[0], self.code_size))
+        return out
 
     def last_cube(self) -> np.ndarray:
-        """Scaled full view episode behind the most recent :meth:`encode`."""
+        """Scaled full view episode behind the most recent :meth:`encode`.
+
+        A copy, length ``N``. After a batched encode this is the last
+        row only.
+        """
         return self._core.last_cube()
 
     def last_raw_cube(self) -> np.ndarray:
-        """Unscaled full view episode behind the most recent :meth:`encode`."""
+        """Unscaled full view episode behind the most recent :meth:`encode`.
+
+        A copy, length ``N``. After a batched encode this is the last
+        row only.
+        """
         return self._core.last_raw_cube()
 
     def last_packed(self) -> np.ndarray:
         """Packed E(x) then E(a) from the most recent predict or accumulate."""
         return self._core.last_packed()
 
-    def encode_action(self, pictures) -> np.ndarray:
+    def encode_action(self, pictures, out=None) -> np.ndarray:
         """Action codes for one picture ``(code_size,)`` or many
         ``(count, code_size)``. Same shape out, float32.
 
         This is a full episode on the action cube, not a lookup. Encode
-        each distinct action once and reuse the code.
+        each distinct action once and reuse the code. ``out`` is an
+        optional C-contiguous writeable float32 array of that shape.
         """
         try:
             a, one = _rows(pictures, self.code_size, "pictures")
@@ -305,32 +336,44 @@ class WorldModel:
                 f"{e}. Short actions: paint_stripes(act, code_size) or "
                 "VectorModel.encode_action"
             ) from e
-        out = self._core.encode_action(a)
-        return out[0] if one else out
+        if out is None:
+            got = self._core.encode_action(a)
+            return got[0] if one else got
+        c = self.code_size
+        buf = _as_out(out, (c,) if one else (a.shape[0], c))
+        self._core.encode_action(a, buf.reshape(a.shape[0], c))
+        return out
 
     # ── Predict ──
 
-    def predict(self, z, za) -> np.ndarray:
+    def predict(self, z, za, out=None) -> np.ndarray:
         """Predicted next view codes. ``z`` and ``za`` are one code each
         or matching ``(count, code_size)`` arrays; a single ``za`` is
-        broadcast against many ``z``."""
+        broadcast against many ``z``. ``out`` is optional caller storage."""
         zz, one_z = _rows(z, self.code_size, "z")
         aa, one_a = _rows(za, self.code_size, "za")
         if one_a and not one_z:
             aa = np.broadcast_to(aa, zz.shape)
         elif one_z and not one_a:
             zz = np.broadcast_to(zz, aa.shape)
-        out = self._core.predict(_f32(zz), _f32(aa))
-        return out[0] if (one_z and one_a) else out
+        squeeze = one_z and one_a
+        c = self.code_size
+        rows = zz.shape[0]
+        if out is None:
+            got = self._core.predict(_f32(zz), _f32(aa))
+            return got[0] if squeeze else got
+        buf = _as_out(out, (c,) if squeeze else (rows, c))
+        self._core.predict(_f32(zz), _f32(aa), buf.reshape(rows, c))
+        return out
 
-    def rollout(self, z0, actions) -> np.ndarray:
+    def rollout(self, z0, actions, out=None) -> np.ndarray:
         """Chain :meth:`predict` over a plan.
 
         ``z0`` is one code ``(code_size,)`` or ``(count, code_size)``;
         ``actions`` is ``(H, code_size)`` or ``(count, H, code_size)`` of
         action codes already through :meth:`encode_action`. Returns
         ``(H + 1, code_size)`` or ``(count, H + 1, code_size)``; row 0 is
-        ``z0``.
+        ``z0``. ``out`` is optional caller storage of that shape.
         """
         c = self.code_size
         zz, one = _rows(z0, c, "z0")
@@ -347,16 +390,28 @@ class WorldModel:
             raise ValueError(
                 f"actions has {aa.shape[0]} rows but z0 has {zz.shape[0]}"
             )
-        out = self._core.rollout(zz, aa)
-        return out[0] if one else out
+        rows, h = aa.shape[0], aa.shape[1]
+        if out is None:
+            got = self._core.rollout(zz, aa)
+            return got[0] if one else got
+        buf = _as_out(out, (h + 1, c) if one else (rows, h + 1, c))
+        self._core.rollout(zz, aa, buf.reshape(rows, h + 1, c))
+        return out
 
-    def pack(self, z, za) -> np.ndarray:
+    def pack(self, z, za, out=None) -> np.ndarray:
         """What the Predictor sees: E(x) then E(a), ``2 * code_size``
-        long. Rarely needed."""
+        long. Rarely needed. ``out`` is optional caller storage."""
         zz, one_z = _rows(z, self.code_size, "z")
         aa, one_a = _rows(za, self.code_size, "za")
-        out = self._core.pack(zz, aa)
-        return out[0] if (one_z and one_a) else out
+        squeeze = one_z and one_a
+        w = 2 * self.code_size
+        rows = zz.shape[0]
+        if out is None:
+            got = self._core.pack(zz, aa)
+            return got[0] if squeeze else got
+        buf = _as_out(out, (w,) if squeeze else (rows, w))
+        self._core.pack(zz, aa, buf.reshape(rows, w))
+        return out
 
     # ── Training (one-shot) ──
 
@@ -409,8 +464,16 @@ class WorldModel:
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
+        bz = np.empty((batch_size, c), np.float32)
+        bza = np.empty((batch_size, c), np.float32)
+        bn = np.empty((batch_size, c), np.float32)
+
         def accumulate(idx):
-            return self._core.accumulate(z[idx], za[idx], z_next[idx])
+            n = int(len(idx))
+            np.take(z, idx, axis=0, out=bz[:n])
+            np.take(za, idx, axis=0, out=bza[:n])
+            np.take(z_next, idx, axis=0, out=bn[:n])
+            return self._core.accumulate(bz[:n], bza[:n], bn[:n])
 
         def evaluate():
             return None if val is None else self.evaluate(*val)
@@ -660,7 +723,9 @@ class Decoder:
     -----
     Call :meth:`fit_input_scale` on the training codes before the first
     epoch; :meth:`fit` does it for you. One instance is **not
-    thread-safe** for concurrent calls.
+    thread-safe** for concurrent calls. Batched decode, accumulate,
+    and fit release the GIL; another Python thread must not touch
+    this instance or the arrays passed in.
     """
 
     def __init__(
@@ -697,12 +762,18 @@ class Decoder:
 
     # ── Inference ──
 
-    def decode(self, codes) -> np.ndarray:
+    def decode(self, codes, out=None) -> np.ndarray:
         """Reconstructed fields for one code ``(code_size,)`` or many
-        ``(count, code_size)``. Returns ``(N,)`` or ``(count, N)``."""
+        ``(count, code_size)``. Returns ``(N,)`` or ``(count, N)``.
+        ``out`` is optional caller storage of that shape."""
         a, one = _rows(codes, self.code_size, "codes")
-        out = self._core.decode(a)
-        return out[0] if one else out
+        n = self.N
+        if out is None:
+            got = self._core.decode(a)
+            return got[0] if one else got
+        buf = _as_out(out, (n,) if one else (a.shape[0], n))
+        self._core.decode(a, buf.reshape(a.shape[0], n))
+        return out
 
     # ── Training (one-shot) ──
 
@@ -742,8 +813,14 @@ class Decoder:
         if fit_input_scale:
             self.fit_input_scale(codes)
 
+        bc = np.empty((batch_size, c), np.float32)
+        bf = np.empty((batch_size, n), np.float32)
+
         def accumulate(idx):
-            return self._core.accumulate(codes[idx], fields[idx])
+            k = int(len(idx))
+            np.take(codes, idx, axis=0, out=bc[:k])
+            np.take(fields, idx, axis=0, out=bf[:k])
+            return self._core.accumulate(bc[:k], bf[:k])
 
         def evaluate():
             return None if val is None else self.evaluate(*val)
@@ -946,7 +1023,29 @@ def lin_r2(z, y, z_val, y_val):
     if y.ndim == 1:
         y = y[:, None]
         yv = yv[:, None]
-    return _lin_r2(_f32(z), _f32(y), _f32(z_val), _f32(yv))
+    z = _f32(z)
+    y = _f32(y)
+    zv = _f32(z_val)
+    yv = _f32(yv)
+    if z.ndim != 2 or y.ndim != 2 or zv.ndim != 2 or yv.ndim != 2:
+        raise ValueError("lin_r2 z and y must be 2-D")
+    if z.shape[0] != y.shape[0]:
+        raise ValueError(
+            f"lin_r2 train z/y row counts differ ({z.shape[0]} vs {y.shape[0]})"
+        )
+    if zv.shape[0] != yv.shape[0]:
+        raise ValueError(
+            f"lin_r2 val z/y row counts differ ({zv.shape[0]} vs {yv.shape[0]})"
+        )
+    if z.shape[1] != zv.shape[1]:
+        raise ValueError(
+            f"lin_r2 z width {z.shape[1]} != z_val width {zv.shape[1]}"
+        )
+    if y.shape[1] != yv.shape[1]:
+        raise ValueError(
+            f"lin_r2 y width {y.shape[1]} != y_val width {yv.shape[1]}"
+        )
+    return _lin_r2(z, y, zv, yv)
 
 
 def rollout_error(model, obs_ep, act_ep, H: int, windows: int, rng):
@@ -1025,7 +1124,12 @@ class Normaliser:
 
 
 class Head:
-    """LCN on a code cube; sign tells plan_cost whether to negate."""
+    """LCN on a code cube; sign tells plan_cost whether to negate.
+
+    One instance is not thread-safe for concurrent calls. Predict,
+    score, and plan_cost write the LCN's forward buffers. fit
+    releases the GIL.
+    """
 
     def __init__(self, sign: str = "cost", seed: int = 1, z_max: int = 0,
                  gather_span: int = 2, tanh_last: bool = False,
@@ -1069,8 +1173,12 @@ class Head:
         self._core.fit(z, y, za_a, int(epochs), int(batch_size))
         return self
 
-    def predict(self, z, za=None):
-        """One scalar per code. ``z`` is ``(code_size,)`` or ``(count, code_size)``."""
+    def predict(self, z, za=None, out=None):
+        """One scalar per code. ``z`` is ``(code_size,)`` or ``(count, code_size)``.
+
+        ``out`` is optional caller storage of shape ``(count,)``. When
+        given, it is filled and returned even if ``z`` is 1-D.
+        """
         z = _f32(z)
         one = z.ndim == 1
         if one:
@@ -1078,11 +1186,15 @@ class Head:
         za_a = None if za is None else _f32(za)
         if za_a is not None and za_a.ndim == 1:
             za_a = za_a.reshape(1, -1)
-        out = self._core.predict(z, za_a)
-        return out[0] if one else out
+        if out is None:
+            got = self._core.predict(z, za_a)
+            return got[0] if one else got
+        buf = _as_out(out, (z.shape[0],))
+        self._core.predict(z, za_a, buf)
+        return out
 
-    def __call__(self, z, za=None):
-        return self.predict(z, za)
+    def __call__(self, z, za=None, out=None):
+        return self.predict(z, za, out=out)
 
     def score(self, z, y, za=None):
         z = _f32(z)
@@ -1094,16 +1206,21 @@ class Head:
             za_a = za_a.reshape(1, -1)
         return self._core.score(z, y, za_a)
 
-    def plan_cost(self, zs):
+    def plan_cost(self, zs, out=None):
         """Planner cost: sum of predicted y over the rollout excluding z0.
 
         ``zs`` is ``(B, H+1, code)``. Returns ``(B,)``. Negated for a
-        reward head so a planner always minimises.
+        reward head so a planner always minimises. ``out`` is optional
+        caller storage of shape ``(B,)``.
         """
         zs = _f32(zs)
         if zs.ndim != 3:
             raise ValueError("plan_cost zs must be (B, H+1, code)")
-        return self._core.plan_cost(zs)
+        if out is None:
+            return self._core.plan_cost(zs)
+        buf = _as_out(out, (zs.shape[0],))
+        self._core.plan_cost(zs, buf)
+        return out
 
     def state(self):
         cfg = self._core
@@ -1148,7 +1265,8 @@ class VectorModel:
     Pass an existing WorldModel, or construct one here with dim, k, and
     the same keywords as WorldModel. Named Heads and optional action
     bounds live here. obs_norm, act_norm, and heads are copies; set_head
-    to put a fitted Head back.
+    to put a fitted Head back. One instance is not thread-safe;
+    encode, encode_action, predict, and rollout release the GIL.
     """
 
     def __init__(self, wm=None, *, obs_norm=None, act_norm=None,
@@ -1244,37 +1362,54 @@ class VectorModel:
     def act_dim(self) -> int:
         return int(self._core.act_dim)
 
-    def encode(self, obs):
+    def encode(self, obs, out=None):
         obs = _f32(obs)
         one = obs.ndim == 1
         if one:
             obs = obs.reshape(1, -1)
         if obs.ndim != 2:
             raise ValueError(f"obs must be 1-D or 2-D, got {obs.ndim}-D")
-        out = self._core.encode(obs)
-        return out[0] if one else out
+        c = self.code_size
+        if out is None:
+            got = self._core.encode(obs)
+            return got[0] if one else got
+        buf = _as_out(out, (c,) if one else (obs.shape[0], c))
+        self._core.encode(obs, buf.reshape(obs.shape[0], c))
+        return out
 
-    def encode_action(self, a):
+    def encode_action(self, a, out=None):
         a = _f32(a)
         one = a.ndim == 1
         if one:
             a = a.reshape(1, -1)
         if a.ndim != 2:
             raise ValueError(f"a must be 1-D or 2-D, got {a.ndim}-D")
-        out = self._core.encode_action(a)
-        return out[0] if one else out
+        c = self.code_size
+        if out is None:
+            got = self._core.encode_action(a)
+            return got[0] if one else got
+        buf = _as_out(out, (c,) if one else (a.shape[0], c))
+        self._core.encode_action(a, buf.reshape(a.shape[0], c))
+        return out
 
-    def predict(self, z, za):
+    def predict(self, z, za, out=None):
         zz, one_z = _rows(z, self._wm.code_size, "z")
         aa, one_a = _rows(za, self._wm.code_size, "za")
         if one_a and not one_z:
             aa = np.broadcast_to(aa, zz.shape)
         elif one_z and not one_a:
             zz = np.broadcast_to(zz, aa.shape)
-        out = self._core.predict(_f32(zz), _f32(aa))
-        return out[0] if (one_z and one_a) else out
+        squeeze = one_z and one_a
+        c = self._wm.code_size
+        rows = zz.shape[0]
+        if out is None:
+            got = self._core.predict(_f32(zz), _f32(aa))
+            return got[0] if squeeze else got
+        buf = _as_out(out, (c,) if squeeze else (rows, c))
+        self._core.predict(_f32(zz), _f32(aa), buf.reshape(rows, c))
+        return out
 
-    def rollout(self, z0, actions):
+    def rollout(self, z0, actions, out=None):
         c = self._wm.code_size
         zz, one = _rows(z0, c, "z0")
         aa = _f32(actions)
@@ -1288,8 +1423,13 @@ class VectorModel:
         ad = int(aa.shape[-1])
         if have != 0 and ad != have:
             raise ValueError(f"act last-dim {ad} != act_dim {have}")
-        out = self._core.rollout(zz, aa)
-        return out[0] if one else out
+        rows, h = aa.shape[0], aa.shape[1]
+        if out is None:
+            got = self._core.rollout(zz, aa)
+            return got[0] if one else got
+        buf = _as_out(out, (h + 1, c) if one else (rows, h + 1, c))
+        self._core.rollout(zz, aa, buf.reshape(rows, h + 1, c))
+        return out
 
     def fit(
         self,
@@ -1334,14 +1474,23 @@ class VectorModel:
     def reset_training(self) -> None:
         self._wm.reset_training()
 
-    def cost(self, zs, goal_z=None):
+    def cost(self, zs, goal_z=None, out=None):
         if self._cost is not None:
-            return self._cost(zs, goal_z)
+            got = self._cost(zs, goal_z)
+            if out is None:
+                return got
+            buf = _as_out(out, tuple(np.shape(got)))
+            buf[...] = got
+            return out
         zs = _f32(zs)
         if zs.ndim != 3:
             raise ValueError("cost zs must be (B, H+1, code)")
         g = None if goal_z is None else _f32(np.ravel(goal_z))
-        return self._core.cost(zs, g)
+        if out is None:
+            return self._core.cost(zs, g)
+        buf = _as_out(out, (zs.shape[0],))
+        self._core.cost(zs, g, buf)
+        return out
 
     def set_head(self, name: str, head: Head) -> None:
         self._core.set_head(str(name), head._core)

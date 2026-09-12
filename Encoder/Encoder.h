@@ -104,11 +104,13 @@ public:
 
     /// @brief Run one episode on the field @p x.
     ///
-    /// Loads s0 into the delay line, sets the pass counter c to 0, then for
-    /// T passes drives vertex v with x[(v XOR c) AND (N-1)], steps, and
-    /// increments c. @p x is not modified. The returned pointer is the
-    /// newest slice times @ref OutputScale, N floats, valid until the
-    /// next RunEpisode. The delay line is not scaled.
+    /// Copies @p x first, then loads s0 into the delay line, sets the
+    /// pass counter c to 0, and for T passes drives vertex v with
+    /// x[(v XOR c) AND (N-1)], steps, and increments c. @p x is not
+    /// modified. A span into the last @ref RawCube or @ref ScaledCube
+    /// is therefore safe. The returned pointer is the newest slice
+    /// times @ref OutputScale, N floats, valid until the next
+    /// RunEpisode. The delay line is not scaled.
     /// @throws std::invalid_argument if @p x is not length N.
     const float* RunEpisode(std::span<const float> x);
 
@@ -209,8 +211,9 @@ private:
 
     size_t passes_ = 0;               // T
     uint64_t ic_seed_ = 1;
-    std::vector<float> s0_;           // N * M, drawn once at construction
-    std::vector<float> drive_;        // N, scratch for the re-addressed field
+    std::vector<float> s0_;            // N * M, drawn once at construction
+    std::vector<float> drive_;         // N, scratch for the re-addressed field
+    std::vector<float> episode_field_; // N, snapshot of RunEpisode input
 
     void Initialize();
     void Step();

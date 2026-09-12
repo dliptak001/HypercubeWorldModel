@@ -63,8 +63,9 @@ public:
     static std::unique_ptr<VectorModel> Load(const std::filesystem::path& file);
 
     /// @brief Write this VectorModel: new magic, then attachments, then a
-    /// length-prefixed WorldModel HWM1 payload. Optional attachments are
-    /// omitted when absent. Does not change HWM1.
+    /// length-prefixed WorldModel HWM1 payload streamed into the file
+    /// (no extra in-memory copy of the payload). Optional attachments
+    /// are omitted when absent. Does not change HWM1.
     void Save(const std::filesystem::path& file) const;
 
     VectorModel(const VectorModel&) = delete;

@@ -252,7 +252,7 @@ holds E(a); both are CodeSize() long.
 std::vector<float> z(wm->CodeSize()), za(wm->CodeSize());
 wm->Encode(field, z);          // field: N floats. Writes E(x) into z.
 wm->LastCube();                // scaled full N-float episode behind the last Encode
-wm->LastRawCube();             // unscaled delay-line cube; presentation does not enter this
+wm->LastRawCube();             // unscaled delay-line cube; a span of this may be passed to Encode
 wm->EncodeAction(picture, za); // picture: 2^k floats. Writes E(a) into za.
 
 PaintStripes(short_vector, field);    // short vector in, field out
@@ -402,7 +402,7 @@ Head h(Head::Sign::Cost);                                // LCN on the code cube
 h.Fit(z, code_size, y);                                 // count is y.size(); za omitted is the default
 h.Predict(z, dst);                                      // one scalar per code
 Head::Score s = h.ScoreOn(z, y);                        // R²; AUC only if y is strictly 0/1 both classes
-h.PlanCost(zs, out);                                    // out is batch long; H+1 inferred from zs
+h.PlanCost(zs, out);                                    // in-place over zs; extra RAM is one packed cube
 vm->SetHead("dist2", h);
 ```
 
@@ -559,6 +559,8 @@ continue training after Load, the schedule starts cold.
   same goes for the size and config getters. Encode, EncodeAction,
   Predict, Rollout, and the training calls are exclusive to one thread
   of control. A Decoder is exclusive to one thread in the same way.
+  A Head is exclusive too: Predict, ScoreOn, and PlanCost write the
+  LCN's forward state even though Predict is const.
 - **Replicas.** Do not clone the WorldModel per thread; that copies
   both frozen encoders for nothing. Keep one WorldModel, encode on it,
   and give each thread its own Predictor built from the WorldModel's

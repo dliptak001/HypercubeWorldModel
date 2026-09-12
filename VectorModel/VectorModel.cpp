@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -355,12 +354,9 @@ void VectorModel::Rollout(std::span<const float> z0, std::span<const float> acti
     const size_t h = actions.size() / act_dim_;
     const size_t c = CodeSize();
     action_codes_.resize(h * c);
-    std::vector<float> za(c);
     for (size_t t = 0; t < h; ++t)
-    {
-        EncodeAction(actions.subspan(t * act_dim_, act_dim_), za);
-        std::memcpy(action_codes_.data() + t * c, za.data(), c * sizeof(float));
-    }
+        EncodeAction(actions.subspan(t * act_dim_, act_dim_),
+                     std::span<float>(action_codes_.data() + t * c, c));
     wm_->Rollout(z0, action_codes_, out);
 }
 
@@ -433,11 +429,18 @@ void VectorModel::Save(const std::filesystem::path& file) const
         WriteString(os, v);
     }
 
-    std::ostringstream blob(std::ios::binary);
-    wm_->Save(blob);
-    const std::string bytes = blob.str();
-    WriteRaw(os, static_cast<uint64_t>(bytes.size()));
-    WriteBytes(os, bytes.data(), bytes.size());
+    const auto len_pos = os.tellp();
+    WriteRaw(os, static_cast<uint64_t>(0));
+    const auto start = os.tellp();
+    wm_->Save(os);
+    const auto end = os.tellp();
+    if (len_pos == std::streampos(-1) || start == std::streampos(-1) ||
+        end == std::streampos(-1) || end < start)
+        throw std::runtime_error("VectorModel::Save cannot size WorldModel payload for " +
+                                 file.string());
+    os.seekp(len_pos);
+    WriteRaw(os, static_cast<uint64_t>(end - start));
+    os.seekp(end);
 
     if (!os)
         throw std::runtime_error("VectorModel::Save write failed for " + file.string());
@@ -499,13 +502,13 @@ std::unique_ptr<VectorModel> VectorModel::Load(const std::filesystem::path& file
     }
 
     const uint64_t n_bytes = ReadRaw<uint64_t>(is, "wm_bytes");
-    std::string bytes(static_cast<size_t>(n_bytes), '\0');
-    is.read(bytes.data(), static_cast<std::streamsize>(n_bytes));
-    if (!is)
-        throw std::runtime_error("VectorModel::Load truncated reading WorldModel in " +
+    const auto start = is.tellg();
+    vm->owned_ = WorldModel::Load(is, file.string() + ":world");
+    const auto end = is.tellg();
+    if (start == std::streampos(-1) || end == std::streampos(-1) ||
+        end < start || static_cast<uint64_t>(end - start) != n_bytes)
+        throw std::runtime_error("VectorModel::Load WorldModel size mismatch in " +
                                  file.string());
-    std::istringstream blob(bytes, std::ios::binary);
-    vm->owned_ = WorldModel::Load(blob, file.string() + ":world");
     vm->wm_ = vm->owned_.get();
     vm->field_.resize(vm->wm_->FieldSize());
     vm->picture_.resize(vm->wm_->CodeSize());

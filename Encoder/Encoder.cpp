@@ -133,6 +133,7 @@ Encoder::Encoder(const EncoderConfig& cfg)
             v = ic_dist(ic_rng);
     }
     drive_.assign(n_, 0.0f);
+    episode_field_.assign(n_, 0.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,15 +232,21 @@ const float* Encoder::RunEpisode(std::span<const float> x)
     if (x.size() != n_)
         throw std::invalid_argument("Encoder::RunEpisode: x.size() must equal N = 2^dim");
 
+    // Snapshot before LoadInitialCondition overwrites the delay line, so a
+    // span into RawCube (or ScaledCube) is a valid field.
+    if (x.data() != episode_field_.data())
+        std::memcpy(episode_field_.data(), x.data(), n_ * sizeof(float));
+
     LoadInitialCondition(s0_.data(), s0_.size());
 
     float* drive = drive_.data();
+    const float* src = episode_field_.data();
     const size_t n_mask = n_ - 1;
     size_t c = 0;
     for (size_t pass = 0; pass < passes_; ++pass)
     {
         for (size_t v = 0; v < n_; ++v)
-            drive[v] = x[(v ^ c) & n_mask];
+            drive[v] = src[(v ^ c) & n_mask];
         InjectInputField(drive, n_);
         Step();
         ++c;

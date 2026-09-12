@@ -150,6 +150,15 @@ def test_encode_shapes_and_determinism():
     with pytest.raises(ValueError) as e:
         wm1.encode(np.zeros(2, np.float32))
     assert "paint_stripes" in str(e.value) and "VectorModel.encode" in str(e.value)
+    buf = np.zeros((2, wm1.code_size), np.float32)
+    got = wm1.encode(np.stack([field, -field]), out=buf)
+    assert got is buf
+    np.testing.assert_array_equal(buf, many)
+    with pytest.raises(ValueError):
+        wm1.encode(field, out=np.zeros(3, np.float32))
+    with pytest.raises(ValueError):
+        wm1.encode(np.stack([field, -field]),
+                   out=np.asfortranarray(np.zeros((2, wm1.code_size), np.float32)))
 
 
 def test_encode_is_first_face_of_last_cube():
@@ -159,6 +168,11 @@ def test_encode_is_first_face_of_last_cube():
     cube = wm.last_cube()
     assert cube.shape == (wm.N,)
     np.testing.assert_array_equal(cube[: wm.code_size], z)
+    other = np.cos(np.arange(wm.N, dtype=np.float32))
+    zs = wm.encode(np.stack([field, other]))
+    last = wm.last_cube()
+    np.testing.assert_array_equal(last[: wm.code_size], zs[1])
+    np.testing.assert_array_equal(last[: wm.code_size], wm.encode(other))
 
 
 def test_encode_does_not_keep_state():
@@ -512,8 +526,14 @@ def test_head_za_optional_and_plan_cost():
     zs = rng.standard_normal((3, 5, 16)).astype(np.float32)
     c = h2.plan_cost(zs)
     assert c.shape == (3,)
+    p = h2.predict(zs[:, 1:].reshape(-1, 16)).reshape(3, 4).sum(axis=1)
+    np.testing.assert_allclose(c, -p, atol=1e-5)
     h3 = hw.Head(sign="cost").fit(z, z[:, 0], epochs=20, batch_size=8)
-    assert np.allclose(h3.plan_cost(zs), -c, atol=1e-5)
+    p3 = h3.predict(zs[:, 1:].reshape(-1, 16)).reshape(3, 4).sum(axis=1)
+    np.testing.assert_allclose(h3.plan_cost(zs), p3, atol=1e-5)
+    buf = np.zeros(3, np.float32)
+    assert h3.plan_cost(zs, out=buf) is buf
+    np.testing.assert_allclose(buf, p3, atol=1e-5)
 
 
 def test_head_auc_binary_and_ties():
@@ -610,6 +630,13 @@ def test_metrics_on_toy_batch():
     n = hw.Normaliser.fit(obs)
     lr = hw.lin_r2(z, n(obs), z, n(obs))
     assert "min" in lr and "mean" in lr
+    with pytest.raises(ValueError, match="row counts"):
+        hw.lin_r2(z, n(obs)[:3], z, n(obs))
+    with pytest.raises((ValueError, RuntimeError), match="same shape"):
+        hw._core.rollout_error_from_codes(
+            np.zeros((2, 3, 4), np.float32),
+            np.zeros((2, 2, 4), np.float32),
+        )
     rng = np.random.default_rng(0)
     actm = hw.action_sensitivity(z, wm.predict, vm.encode_action, 2, mse, rng, n=8)
     assert "act" in actm

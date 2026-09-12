@@ -307,13 +307,16 @@ What the training knobs do to a run is in [predictor.md](predictor.md).
 
 Every method that takes codes or fields accepts one row (a 1-D array)
 or many (a 2-D array with one row per sample) and returns the same
-shape. The loop over rows runs in C++ with the GIL released.
+shape. The loop over rows runs in C++ with the GIL released. Inference
+methods take an optional ``out=`` C-contiguous writeable float32 array
+of the returned shape: it is filled and returned (the same object).
+Without ``out`` a new array is allocated, as before.
 
 | Method | Role |
 |--------|------|
 | encode(fields) | View codes. (N,) or (count, N) in; (code_size,) or (count, code_size) out. |
-| last_cube() | Scaled full view episode behind the most recent encode. Same pointer Encode returns after output_scale. |
-| last_raw_cube() | Unscaled full view episode behind the most recent encode. Presentation does not enter this. |
+| last_cube() | Copy of the scaled full view episode behind the most recent encode. After a batched encode, the last row only. |
+| last_raw_cube() | Copy of the unscaled full view episode behind the most recent encode. After a batched encode, the last row only. |
 | last_packed() | Packed E(x) then E(a) from the most recent predict or accumulate. |
 | set_view_output_scale(scale) / set_action_output_scale(scale) | Presentation gain on that encoder's returned cube. Finite, > 0. |
 | suggest_view_output_scale(z, target_rms=1) / suggest_action_output_scale(za, …) | target_rms / rms of already-run raw codes. Does not mutate. |
@@ -424,6 +427,7 @@ h.fit(z, y, epochs=40, batch_size=32)       # za omitted is the default
 yhat = h.predict(z)                         # one scalar per code; h(z) is the same
 s = h.score(z, y)                           # dict: r2; auc only if y is strictly 0/1
 c = h.plan_cost(zs)                         # (B,) sum excluding z0, signed
+h.plan_cost(zs, out=c)                      # reuse c; same object returned
 
 vm = hw.VectorModel(dim=6, k=5, leak_rate=0.25, action_low=lo, action_high=hi)
 # or wrap an existing WorldModel
@@ -456,7 +460,7 @@ this package.
 hw.no_change_mse(z, zn)
 hw.one_step_ratio(mse, z, zn)
 hw.action_sensitivity(z, predict, encode_action, act_dim, mse, rng)
-hw.lin_r2(z, y, z_val, y_val)
+hw.lin_r2(z, y, z_val, y_val)   # train/val z, y must match in rows and width
 hw.rollout_error(vm, obs_ep, act_ep, H, windows, rng)
 ```
 
@@ -576,11 +580,13 @@ and a version and carry no code.
 
 ## Limitations
 
-- One WorldModel or Decoder is **not thread-safe** for concurrent calls
-  from multiple host threads. Separate instances on separate threads
-  are fine; the extension releases the GIL during encode,
-  encode_action, predict, rollout, decode, accumulate, and end_batch,
-  so multi-instance threading gets real parallelism.
+- One WorldModel, Decoder, VectorModel, or Head is **not thread-safe**
+  for concurrent calls from multiple host threads. Separate instances
+  on separate threads are fine. Batched encode, encode_action,
+  predict, rollout, decode, accumulate, end_batch, fit, and Head.fit
+  release the GIL for the C++ work, so multi-instance threading gets
+  real parallelism. The GIL does not serialize writes to the arrays
+  passed in, or to the same instance, while that call is in C++.
 - encode_action is a full episode on the action cube, T passes, and it
   costs more than a predict. A sampler that paints and encodes every
   raw action it draws pays that for every sample at every horizon step,

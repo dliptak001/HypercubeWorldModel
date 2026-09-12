@@ -102,7 +102,9 @@ same picture, T successive addressings. T = 0 in the config means
 T = N, a full tour. Larger T wraps.
 
 **Read once.** After the last pass, RunEpisode returns the newest
-slice, N floats, valid until the next RunEpisode.
+slice, N floats, valid until the next RunEpisode. The field is
+copied before the delay line is reloaded, so a span into the last
+RawCube or ScaledCube is a valid next field.
 
 ```
 const float* out = enc.RunEpisode(x);   // x: N floats. out: N floats.
