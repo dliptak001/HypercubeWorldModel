@@ -162,8 +162,9 @@ struct WorldModelPredictorConfig
 
 struct WorldModelConfig
 {
-    EncoderConfig encoder;
-    size_t   k;            // code face and action cube; in [5, encoder.dim)
+    EncoderConfig encoder;          // view instance; every knob is this encoder's
+    EncoderConfig action_encoder;   // action instance; dim must equal k (0 = copy view)
+    size_t   k;                     // code face and action cube; in [5, encoder.dim)
     WorldModelPredictorConfig predictor;
 };
 

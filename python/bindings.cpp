@@ -93,6 +93,31 @@ py::array_t<float> PointerToArray(const float* p, size_t n)
     return arr;
 }
 
+void ApplyEncoderDict(EncoderConfig& e, const py::dict& d)
+{
+    auto set_size = [&](const char* key, size_t& dst) {
+        if (d.contains(key)) dst = d[key].cast<size_t>();
+    };
+    auto set_u64 = [&](const char* key, uint64_t& dst) {
+        if (d.contains(key)) dst = d[key].cast<uint64_t>();
+    };
+    auto set_f = [&](const char* key, float& dst) {
+        if (d.contains(key)) dst = d[key].cast<float>();
+    };
+    set_size("dim", e.dim);
+    if (d.contains("seed"))
+        e.seed = d["seed"].cast<uint64_t>();
+    else if (d.contains("encoder_seed"))
+        e.seed = d["encoder_seed"].cast<uint64_t>();
+    set_u64("ic_seed", e.ic_seed);
+    set_f("spectral_radius", e.spectral_radius);
+    set_f("leak_rate", e.leak_rate);
+    set_f("input_scaling", e.input_scaling);
+    set_f("output_scale", e.output_scale);
+    set_size("history_depth", e.history_depth);
+    set_size("passes", e.passes);
+}
+
 void RequireSameRows(size_t a, size_t b, const char* what)
 {
     if (a != b)
@@ -230,7 +255,9 @@ PYBIND11_MODULE(_core, m)
                          size_t history_depth, size_t passes,
                          size_t z_max, size_t gather_span, bool tanh_last, uint64_t seed,
                          float lr, float lr_min_frac, int lr_decay_epochs, bool restore_best,
-                         float beta1, float beta2, float eps) {
+                         float beta1, float beta2, float eps,
+                         std::optional<py::dict> encoder,
+                         std::optional<py::dict> action_encoder) {
             WorldModelConfig cfg;
             cfg.encoder.dim = dim;
             cfg.encoder.seed = encoder_seed;
@@ -241,7 +268,17 @@ PYBIND11_MODULE(_core, m)
             cfg.encoder.output_scale = output_scale;
             cfg.encoder.history_depth = history_depth;
             cfg.encoder.passes = passes;
+            if (encoder)
+                ApplyEncoderDict(cfg.encoder, *encoder);
             cfg.k = k;
+            if (action_encoder)
+            {
+                cfg.action_encoder = cfg.encoder;
+                cfg.action_encoder.dim = k;
+                ApplyEncoderDict(cfg.action_encoder, *action_encoder);
+                if (!action_encoder->contains("dim"))
+                    cfg.action_encoder.dim = k;
+            }
             cfg.predictor.z_max = z_max;
             cfg.predictor.gather_span = gather_span;
             cfg.predictor.tanh_last = tanh_last;
@@ -257,7 +294,9 @@ PYBIND11_MODULE(_core, m)
             py::arg("history_depth"), py::arg("passes"),
             py::arg("z_max"), py::arg("gather_span"), py::arg("tanh_last"), py::arg("seed"),
             py::arg("lr"), py::arg("lr_min_frac"), py::arg("lr_decay_epochs"),
-            py::arg("restore_best"), py::arg("beta1"), py::arg("beta2"), py::arg("eps"))
+            py::arg("restore_best"), py::arg("beta1"), py::arg("beta2"), py::arg("eps"),
+            py::arg("encoder") = py::none(),
+            py::arg("action_encoder") = py::none())
 
         .def_static("load", [](const std::filesystem::path& file) {
             return WorldModel::Load(file);
@@ -281,6 +320,28 @@ PYBIND11_MODULE(_core, m)
             d["action_output_scale"] = self.ActionOutputScale();
             d["history_depth"] = c.encoder.history_depth;
             d["passes"] = self.RequestedPasses();   // as given, 0 included; not the resolved T
+            py::dict view;
+            view["dim"] = c.encoder.dim;
+            view["seed"] = c.encoder.seed;
+            view["ic_seed"] = c.encoder.ic_seed;
+            view["spectral_radius"] = c.encoder.spectral_radius;
+            view["leak_rate"] = c.encoder.leak_rate;
+            view["input_scaling"] = c.encoder.input_scaling;
+            view["output_scale"] = self.ViewOutputScale();
+            view["history_depth"] = c.encoder.history_depth;
+            view["passes"] = self.RequestedPasses();
+            d["encoder"] = view;
+            py::dict act;
+            act["dim"] = c.action_encoder.dim;
+            act["seed"] = c.action_encoder.seed;
+            act["ic_seed"] = c.action_encoder.ic_seed;
+            act["spectral_radius"] = c.action_encoder.spectral_radius;
+            act["leak_rate"] = c.action_encoder.leak_rate;
+            act["input_scaling"] = c.action_encoder.input_scaling;
+            act["output_scale"] = self.ActionOutputScale();
+            act["history_depth"] = c.action_encoder.history_depth;
+            act["passes"] = self.RequestedActionPasses();
+            d["action_encoder"] = act;
             d["z_max"] = c.predictor.z_max;          // resolved: 0 already replaced by k+1
             d["gather_span"] = c.predictor.gather_span;
             d["tanh_last"] = c.predictor.tanh_last;
@@ -668,7 +729,7 @@ PYBIND11_MODULE(_core, m)
     py::class_<Head>(m, "_Head")
         .def(py::init([](const std::string& sign, uint64_t seed, size_t z_max,
                          size_t gather_span, bool tanh_last, float lr, float lr_min_frac,
-                         bool restore_best) {
+                         int lr_decay_epochs, bool restore_best) {
             Head::Sign s = Head::Sign::Cost;
             if (sign == "reward")
                 s = Head::Sign::Reward;
@@ -682,12 +743,13 @@ PYBIND11_MODULE(_core, m)
             cfg.tanh_last = tanh_last;
             cfg.lr = lr;
             cfg.lr_min_frac = lr_min_frac;
+            cfg.lr_decay_epochs = lr_decay_epochs;
             cfg.restore_best = restore_best;
             return Head(cfg);
         }), py::arg("sign") = "cost", py::arg("seed") = 1, py::arg("z_max") = 0,
             py::arg("gather_span") = 2, py::arg("tanh_last") = false,
             py::arg("lr") = 1e-2f, py::arg("lr_min_frac") = 0.02f,
-            py::arg("restore_best") = true)
+            py::arg("lr_decay_epochs") = 0, py::arg("restore_best") = true)
         .def("fit", [](Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za,
                        int epochs, size_t batch) {
             const auto zb = z.request(), yb = y.request();

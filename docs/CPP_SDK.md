@@ -211,7 +211,8 @@ struct WorldModelPredictorConfig {
 };
 
 struct WorldModelConfig {
-    EncoderConfig encoder;                 // the view encoder; the action encoder is the same with dim = k
+    EncoderConfig encoder;                 // view encoder; every knob is this instance's
+    EncoderConfig action_encoder;          // action encoder; dim must equal k (0 = copy view, dim = k)
     size_t   k;                            // kept face and action cube; in [5, encoder.dim)
     WorldModelPredictorConfig predictor;   // dim is always k+1, not a knob
 };
@@ -228,7 +229,8 @@ What the training knobs do to a run is in [predictor.md](predictor.md).
 |------|----------|
 | encoder.dim | Sized to the view. A view shorter than N goes through PaintStripes |
 | k | Chooses the code length, 2ᵏ. Smaller is more compression |
-| encoder.output_scale | Presentation gain on the returned cube. Default 1. View and action encoders can be set independently after Create. |
+| encoder.output_scale | View presentation gain at Create. Default 1. |
+| action_encoder | Every action-encoder knob, including its own output_scale, leak_rate, input_scaling, passes. dim must equal k. |
 | predictor.z_max | Depth buys reach on the Predictor cube. 0 means k+1, antipodal reach on that cube |
 | predictor.training.lr, batch size | The gradient is a batch **sum**; scale them together |
 | predictor.training.restore_best | Default on. Feed Observe a validation metric |

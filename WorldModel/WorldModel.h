@@ -48,14 +48,20 @@ struct WorldModelPredictorConfig
 
 /// @brief Construction parameters for @ref WorldModel. All fixed at Create.
 ///
-/// Encoder knobs are @ref EncoderConfig. The action encoder is not a
-/// separate knob: it takes the same EncoderConfig with dim replaced by
-/// k, so its cube is the k-face size and its full output is E(a).
-/// Predictor dim is not a knob either: it is always k+1 (first subcube
-/// holds E(x); extra bit-face holds E(a)). k must be in [5, encoder.dim).
+/// Two EncoderConfigs: @c encoder is the view cube, @c action_encoder is
+/// the action cube. Each instance gets its own knobs (seed, leak,
+/// input_scaling, output_scale, passes, …). @c action_encoder.dim must
+/// equal @c k. If @c action_encoder.dim is 0, Create copies the view
+/// encoder and sets dim = k (SDK shorthand; a host should fill both).
+/// Predictor dim is not a knob: it is always k+1. k must be in
+/// [5, encoder.dim).
 struct WorldModelConfig
 {
     EncoderConfig encoder{};
+
+    /// Action encoder. dim must equal k, or 0 to copy @c encoder with
+    /// dim = k.
+    EncoderConfig action_encoder{.dim = 0};
 
     /// Code face dimension. Compression is this cut. Strictly less than
     /// encoder.dim; the action encoder needs k >= 5. Predictor cube is k+1.
@@ -254,17 +260,19 @@ public:
     [[nodiscard]] size_t K() const { return cfg_.k; }
 
     /// Config as given to Create, except predictor.z_max is resolved
-    /// (0 already replaced by k+1). encoder.passes is as given, 0
-    /// included: feeding this snapshot back to Create rebuilds the same
-    /// pair of encoders. Current view output_scale is reflected here;
-    /// the action encoder's scale is ActionOutputScale().
+    /// (0 already replaced by k+1). Both encoders' passes are as given,
+    /// 0 included. Current output_scale of each encoder is reflected
+    /// here. Feeding this snapshot back to Create rebuilds the same pair.
     [[nodiscard]] const WorldModelConfig& Config() const { return cfg_; }
 
     /// encoder.passes as given to Create, 0 included. Same value as
     /// Config().encoder.passes. What Save writes.
     [[nodiscard]] size_t RequestedPasses() const { return requested_passes_; }
 
-    /// The action encoder's resolved config: cfg.encoder with dim = k.
+    /// action_encoder.passes as given to Create, 0 included.
+    [[nodiscard]] size_t RequestedActionPasses() const { return requested_action_passes_; }
+
+    /// The action encoder's config (passes resolved).
     [[nodiscard]] EncoderConfig ActionEncoderConfig() const;
 
     [[nodiscard]] float ViewOutputScale() const;
@@ -295,7 +303,8 @@ private:
     explicit WorldModel(const WorldModelConfig& cfg);
 
     WorldModelConfig cfg_;
-    size_t requested_passes_ = 0;   // encoder.passes as given to Create; what Save writes
+    size_t requested_passes_ = 0;          // view encoder.passes as given
+    size_t requested_action_passes_ = 0;   // action_encoder.passes as given
     std::unique_ptr<Encoder> enc_;
     std::unique_ptr<Encoder> act_enc_;
     std::unique_ptr<Predictor> pred_;

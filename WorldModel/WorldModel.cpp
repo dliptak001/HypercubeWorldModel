@@ -13,7 +13,23 @@ namespace {
 
 constexpr char kMagic[4] = {'H', 'W', 'M', '1'};
 constexpr uint32_t kFileVersionV1 = 1;
-constexpr uint32_t kFileVersion = 2;
+constexpr uint32_t kFileVersionV2 = 2;
+constexpr uint32_t kFileVersion = 3;
+
+EncoderConfig ResolveActionEncoder(const WorldModelConfig& cfg)
+{
+    EncoderConfig a = cfg.action_encoder;
+    if (a.dim == 0)
+    {
+        a = cfg.encoder;
+        a.dim = cfg.k;
+        return a;
+    }
+    if (a.dim != cfg.k)
+        throw std::invalid_argument(
+            "WorldModel::Create action_encoder.dim must equal k");
+    return a;
+}
 
 template <typename T>
 void WriteRaw(std::ostream& os, const T& v)
@@ -59,11 +75,8 @@ WorldModel::WorldModel(const WorldModelConfig& cfg)
         throw std::invalid_argument(
             "WorldModel::Create k must be in [5, encoder.dim)");
 
-    // action encoder: same knobs and seeds, cube of dimension k; its
-    // whole output is E(a), already the k-face size. output_scale starts
-    // the same as the view encoder; SetActionOutputScale after Create.
-    EncoderConfig acfg = cfg.encoder;
-    acfg.dim = cfg.k;
+    EncoderConfig acfg = ResolveActionEncoder(cfg);
+    requested_action_passes_ = acfg.passes;
     act_enc_ = Encoder::Create(acfg);
 
     PredictorConfig pcfg;
@@ -77,6 +90,10 @@ WorldModel::WorldModel(const WorldModelConfig& cfg)
 
     cfg_.encoder = enc_->Config();
     cfg_.encoder.passes = requested_passes_;
+    cfg_.encoder.output_scale = enc_->OutputScale();
+    cfg_.action_encoder = act_enc_->Config();
+    cfg_.action_encoder.passes = requested_action_passes_;
+    cfg_.action_encoder.output_scale = act_enc_->OutputScale();
     cfg_.predictor.z_max = pred_->Config().z_max;
     packed_.resize(pred_->Size());
     pred_out_.resize(pred_->Size());
@@ -215,6 +232,14 @@ void WorldModel::Save(std::ostream& os) const
 
     WriteRaw(os, static_cast<uint64_t>(cfg_.k));
     WriteRaw(os, enc_->OutputScale());
+    const EncoderConfig& a = cfg_.action_encoder;
+    WriteRaw(os, static_cast<uint64_t>(a.seed));
+    WriteRaw(os, a.spectral_radius);
+    WriteRaw(os, a.leak_rate);
+    WriteRaw(os, a.input_scaling);
+    WriteRaw(os, static_cast<uint64_t>(a.history_depth));
+    WriteRaw(os, static_cast<uint64_t>(requested_action_passes_));
+    WriteRaw(os, static_cast<uint64_t>(a.ic_seed));
     WriteRaw(os, act_enc_->OutputScale());
     WriteRaw(os, static_cast<uint64_t>(cfg_.predictor.z_max));
     WriteRaw(os, static_cast<uint64_t>(cfg_.predictor.gather_span));
@@ -253,7 +278,7 @@ std::unique_ptr<WorldModel> WorldModel::Load(std::istream& is, std::string_view 
         throw std::runtime_error("WorldModel::Load bad magic in " + src);
 
     const uint32_t version = ReadRaw<uint32_t>(is, "version");
-    if (version != kFileVersion && version != kFileVersionV1)
+    if (version != kFileVersion && version != kFileVersionV2 && version != kFileVersionV1)
         throw std::runtime_error("WorldModel::Load unsupported version " +
                                  std::to_string(version) + " in " + src);
 
@@ -268,17 +293,37 @@ std::unique_ptr<WorldModel> WorldModel::Load(std::istream& is, std::string_view 
     cfg.encoder.ic_seed = ReadRaw<uint64_t>(is, "encoder.ic_seed");
 
     cfg.k = static_cast<size_t>(ReadRaw<uint64_t>(is, "k"));
-    float action_output_scale = 1.f;
     if (version == kFileVersionV1)
     {
         // v1 Pack multiplied E(a) by action_scale; view codes were raw.
-        action_output_scale = ReadRaw<float>(is, "action_scale");
+        const float action_output_scale = ReadRaw<float>(is, "action_scale");
         cfg.encoder.output_scale = 1.f;
+        cfg.action_encoder = cfg.encoder;
+        cfg.action_encoder.dim = cfg.k;
+        cfg.action_encoder.output_scale = action_output_scale;
+    }
+    else if (version == kFileVersionV2)
+    {
+        cfg.encoder.output_scale = ReadRaw<float>(is, "view_output_scale");
+        const float action_output_scale = ReadRaw<float>(is, "action_output_scale");
+        cfg.action_encoder = cfg.encoder;
+        cfg.action_encoder.dim = cfg.k;
+        cfg.action_encoder.output_scale = action_output_scale;
     }
     else
     {
         cfg.encoder.output_scale = ReadRaw<float>(is, "view_output_scale");
-        action_output_scale = ReadRaw<float>(is, "action_output_scale");
+        cfg.action_encoder.dim = cfg.k;
+        cfg.action_encoder.seed = ReadRaw<uint64_t>(is, "action_encoder.seed");
+        cfg.action_encoder.spectral_radius = ReadRaw<float>(is, "action_encoder.spectral_radius");
+        cfg.action_encoder.leak_rate = ReadRaw<float>(is, "action_encoder.leak_rate");
+        cfg.action_encoder.input_scaling = ReadRaw<float>(is, "action_encoder.input_scaling");
+        cfg.action_encoder.history_depth =
+            static_cast<size_t>(ReadRaw<uint64_t>(is, "action_encoder.history_depth"));
+        cfg.action_encoder.passes =
+            static_cast<size_t>(ReadRaw<uint64_t>(is, "action_encoder.passes"));
+        cfg.action_encoder.ic_seed = ReadRaw<uint64_t>(is, "action_encoder.ic_seed");
+        cfg.action_encoder.output_scale = ReadRaw<float>(is, "action_output_scale");
     }
     cfg.predictor.z_max = static_cast<size_t>(ReadRaw<uint64_t>(is, "z_max"));
     cfg.predictor.gather_span = static_cast<size_t>(ReadRaw<uint64_t>(is, "gather_span"));
@@ -296,7 +341,6 @@ std::unique_ptr<WorldModel> WorldModel::Load(std::istream& is, std::string_view 
     const uint64_t n_weights = ReadRaw<uint64_t>(is, "n_weights");
 
     auto wm = Create(cfg);   // invalid_argument here means a bad config in the file
-    wm->SetActionOutputScale(action_output_scale);
     if (n_weights != wm->pred_->Weights().size())
         throw std::runtime_error("WorldModel::Load weight count " + std::to_string(n_weights) +
                                  " does not match config in " + src);
@@ -406,6 +450,7 @@ void WorldModel::SetViewOutputScale(float scale)
 void WorldModel::SetActionOutputScale(float scale)
 {
     act_enc_->SetOutputScale(scale);
+    cfg_.action_encoder.output_scale = act_enc_->OutputScale();
 }
 
 float WorldModel::SuggestViewOutputScale(std::span<const float> z, float target_rms) const

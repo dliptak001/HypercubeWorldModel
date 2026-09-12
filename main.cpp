@@ -386,6 +386,32 @@ int main()
         threw = false;
         try
         {
+            WorldModelConfig bad = wcfg;
+            bad.action_encoder = wcfg.encoder;
+            bad.action_encoder.dim = wcfg.k + 1;
+            WorldModel::Create(bad);
+        }
+        catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) return Fail("WorldModel action_encoder.dim != k not rejected");
+        {
+            WorldModelConfig split = wcfg;
+            split.action_encoder = wcfg.encoder;
+            split.action_encoder.dim = wcfg.k;
+            split.action_encoder.input_scaling = wcfg.encoder.input_scaling * 2.f;
+            auto wms = WorldModel::Create(split);
+            if (wms->Config().action_encoder.input_scaling != split.action_encoder.input_scaling)
+                return Fail("WorldModel action encoder input_scaling not kept");
+            const auto splitf =
+                std::filesystem::temp_directory_path() / "hypercube_world_model_action_enc.wm";
+            wms->Save(splitf);
+            auto wml = WorldModel::Load(splitf);
+            if (wml->Config().action_encoder.input_scaling != split.action_encoder.input_scaling)
+                return Fail("WorldModel action encoder input_scaling not in file");
+            std::filesystem::remove(splitf);
+        }
+        threw = false;
+        try
+        {
             wm->SetViewOutputScale(std::bit_cast<float>(0x7fc00000u));
         }
         catch (const std::invalid_argument&) { threw = true; }

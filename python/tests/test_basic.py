@@ -105,6 +105,25 @@ def test_sizes():
     assert wm.passes == 12 and wm.action_passes == 12
 
 
+def test_action_encoder_dict_sets_own_knobs():
+    wm = hw.WorldModel(
+        DIM, K, passes=12, leak_rate=0.25, input_scaling=0.8,
+        encoder=dict(dim=DIM, seed=1, ic_seed=1, spectral_radius=0.999,
+                     leak_rate=0.25, input_scaling=0.5, output_scale=1.0,
+                     history_depth=8, passes=12),
+        action_encoder=dict(dim=K, seed=2, ic_seed=3, spectral_radius=0.999,
+                            leak_rate=0.5, input_scaling=2.0, output_scale=3.0,
+                            history_depth=4, passes=8),
+    )
+    assert wm.encoder["input_scaling"] == pytest.approx(0.5)
+    assert wm.action_encoder["input_scaling"] == pytest.approx(2.0)
+    assert wm.action_encoder["output_scale"] == pytest.approx(3.0)
+    assert wm.action_encoder["history_depth"] == 4
+    assert wm.action_passes == 8
+    with pytest.raises(ValueError):
+        hw.WorldModel(DIM, K, action_encoder=dict(dim=K + 1))
+
+
 def test_passes_zero_resolves_per_cube():
     wm = make_wm(passes=0)
     assert wm.passes == 0

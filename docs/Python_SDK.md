@@ -252,8 +252,11 @@ E(x), the view code ------+   +------ E(a), the action code
 ### Constructor WorldModel(dim, k, **kwargs)
 
 All knobs are fixed at construction, the same contract as the C++
-WorldModelConfig with its EncoderConfig and Predictor knobs laid flat.
-Every keyword has a default; the two positional arguments do not.
+WorldModelConfig. Flat keywords fill the view encoder and are copied
+to the action encoder unless you pass ``encoder`` and ``action_encoder``
+dicts (each a full EncoderConfig). A host should pass both dicts so
+neither instance relies on package defaults. Every keyword has a
+default; the two positional arguments do not.
 
 ```python
 import hypercube_worldmodel as hw

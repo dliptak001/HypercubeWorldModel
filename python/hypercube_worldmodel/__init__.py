@@ -192,14 +192,22 @@ class WorldModel:
         Code face dimension, at least 5 and strictly less than ``dim``.
         Also the action cube dimension.
     output_scale : float
-        Presentation gain on both encoders at Create. Finite, > 0.
-        Default 1. Set each encoder independently afterwards.
+        Presentation gain on both encoders at Create if ``encoder`` /
+        ``action_encoder`` omit it. Finite, > 0. Default 1.
+    encoder, action_encoder : dict, optional
+        Full EncoderConfig for each instance: dim, seed, ic_seed,
+        spectral_radius, leak_rate, input_scaling, output_scale,
+        history_depth, passes. ``action_encoder.dim`` must equal ``k``
+        (or omit dim). If omitted, the action encoder copies the view
+        knobs with dim = k. A host should pass both dicts explicitly.
     encoder_seed, ic_seed : int
-        Encoder weight draw and episode start state. Both encoders use
-        both; the action encoder differs only in its cube.
+        Encoder weight draw and episode start state. Used when the
+        corresponding dict omits them. Both encoders use both unless
+        ``action_encoder`` overrides.
     spectral_radius, leak_rate, input_scaling : float
         Reservoir knobs, all finite. spectral_radius > 0; leak_rate in
-        (0, 1]; input_scaling any finite value.
+        (0, 1]; input_scaling any finite value. Flat kwargs fill the
+        view encoder; ``encoder`` / ``action_encoder`` override.
     history_depth : int
         Delay line length M, 1 to 64.
     passes : int
@@ -254,6 +262,8 @@ class WorldModel:
         beta1: float = 0.9,
         beta2: float = 0.999,
         eps: float = 1e-8,
+        encoder: dict | None = None,
+        action_encoder: dict | None = None,
     ):
         self._ctor = dict(
             dim=dim, k=k,
@@ -266,6 +276,10 @@ class WorldModel:
             **_training_kwargs(lr, lr_min_frac, lr_decay_epochs, restore_best,
                                beta1, beta2, eps),
         )
+        if encoder is not None:
+            self._ctor["encoder"] = dict(encoder)
+        if action_encoder is not None:
+            self._ctor["action_encoder"] = dict(action_encoder)
         self._core = _WorldModel(**self._ctor)
 
     @classmethod
@@ -604,6 +618,16 @@ class WorldModel:
     @property
     def action_output_scale(self) -> float:
         return float(self._core.action_output_scale())
+
+    @property
+    def encoder(self) -> dict:
+        """View encoder knobs as given (passes of 0 stays 0)."""
+        return dict(self._core.config()["encoder"])
+
+    @property
+    def action_encoder(self) -> dict:
+        """Action encoder knobs as given (passes of 0 stays 0)."""
+        return dict(self._core.config()["action_encoder"])
 
     def set_view_output_scale(self, scale: float) -> None:
         self._core.set_view_output_scale(float(scale))
@@ -1134,10 +1158,10 @@ class Head:
     def __init__(self, sign: str = "cost", seed: int = 1, z_max: int = 0,
                  gather_span: int = 2, tanh_last: bool = False,
                  lr: float = 1e-2, lr_min_frac: float = 0.02,
-                 restore_best: bool = True):
+                 lr_decay_epochs: int = 0, restore_best: bool = True):
         self._core = _Head(str(sign), int(seed), int(z_max), int(gather_span),
                            bool(tanh_last), float(lr), float(lr_min_frac),
-                           bool(restore_best))
+                           int(lr_decay_epochs), bool(restore_best))
 
     @classmethod
     def _wrap(cls, core) -> "Head":
