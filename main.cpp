@@ -30,6 +30,9 @@ static int Fail(const char* what)
 
 int main()
 {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    try
+    {
     // --- Encoder -----------------------------------------------------------
     EncoderConfig ecfg;
     ecfg.dim = 6;
@@ -458,29 +461,21 @@ int main()
     if (!threw) return Fail("RequireLastDim 7>6 did not throw");
 
     {
-        // Quadratic Head on a toy pairwise distance: z = [a, b], y = ||a-b||^2.
-        const size_t code = 4, n = 64;
+        // LCN Head reads vertex 0 of a 16-cube; y is that vertex.
+        const size_t code = 16, n = 64;
         std::vector<float> z(n * code), y(n);
         for (size_t i = 0; i < n; ++i)
         {
-            const float ax = static_cast<float>(i % 8) / 7.f;
-            const float ay = static_cast<float>(i / 8) / 7.f;
-            const float bx = 1.f - ax, by = 0.5f;
-            z[i * code + 0] = ax;
-            z[i * code + 1] = ay;
-            z[i * code + 2] = bx;
-            z[i * code + 3] = by;
-            const float dx = ax - bx, dy = ay - by;
-            y[i] = dx * dx + dy * dy;
+            for (size_t j = 0; j < code; ++j)
+                z[i * code + j] = static_cast<float>((i + 3 * j) % 11) / 10.f - 0.5f;
+            y[i] = z[i * code];
         }
         Head qh;
-        qh.Fit(z, code, y, n);
+        qh.Fit(z, code, y, n, {}, 40, 16);
         const Head::Score qs = qh.ScoreOn(z, y);
-        std::printf("Head quadratic toy-distance R2 %.4f\n", qs.r2);
-        if (!(qs.r2 > 0.99f)) return Fail("Head quadratic R2 not near 1");
-        Head lh(Head::Kind::Linear);
-        lh.Fit(z, code, y, n);
-        if (!lh.Fitted()) return Fail("Head linear did not fit");
+        std::printf("Head toy-readout R2 %.4f\n", qs.r2);
+        if (!(qs.r2 > 0.7f)) return Fail("Head toy-readout R2 too low");
+        if (!qh.Fitted()) return Fail("Head did not fit");
         threw = false;
         try { std::vector<float> dummy(n); qh.Apply(z, dummy, z); }
         catch (const std::invalid_argument&) { threw = true; }
@@ -507,9 +502,9 @@ int main()
         vm->Rollout(z, act, path);   // H=1
         if (path[0] != z[0]) return Fail("VectorModel Rollout z0");
 
-        Head dist(Head::Kind::Linear);
+        Head dist;
         std::vector<float> y{0.1f};
-        dist.Fit(z, c, y, 1);
+        dist.Fit(z, c, y, 1, {}, 4, 1);
         threw = false;
         try { vm->SetHead("empty", Head()); }
         catch (const std::invalid_argument&) { threw = true; }
@@ -527,7 +522,8 @@ int main()
         for (size_t i = 0; i < c; ++i)
             if (z[i] != z2[i])
                 return Fail("VectorModel Load Encode differs");
-        if (!vm2->GetHead("dist2") || vm2->GetHead("dist2")->Bias() != dist.Bias())
+        if (!vm2->GetHead("dist2") || !vm2->GetHead("dist2")->Fitted() ||
+            vm2->GetHead("dist2")->Net().Weights()[0] != dist.Net().Weights()[0])
             return Fail("VectorModel Load Head");
         if (!vm2->ObsNormaliser() && vm->ObsNormaliser())
             return Fail("VectorModel Load norm");
@@ -576,4 +572,10 @@ int main()
 
     std::printf("all OK\n");
     return 0;
+    }
+    catch (const std::exception& e)
+    {
+        std::printf("FAIL: exception %s\n", e.what());
+        return 1;
+    }
 }

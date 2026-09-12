@@ -52,7 +52,6 @@ target_link_libraries(WorldModel PUBLIC Encoder Predictor)
 # Normaliser, Head, MinDim/MinK, and the MSE/linR2 metrics live here.
 add_library(VectorModel STATIC
     Normaliser/Normaliser.cpp
-    Head/Solver.cpp
     Head/Head.cpp
     VectorModel/VectorModel.cpp
     VectorModel/Metrics.cpp)

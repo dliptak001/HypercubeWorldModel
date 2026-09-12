@@ -39,7 +39,6 @@ set(CORE_SOURCES
     ${CORE_DIR}/Decoder/Decoder.cpp
     ${CORE_DIR}/WorldModel/WorldModel.cpp
     ${CORE_DIR}/Normaliser/Normaliser.cpp
-    ${CORE_DIR}/Head/Solver.cpp
     ${CORE_DIR}/Head/Head.cpp
     ${CORE_DIR}/VectorModel/VectorModel.cpp
     ${CORE_DIR}/VectorModel/Metrics.cpp

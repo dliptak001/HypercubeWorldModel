@@ -3,7 +3,7 @@
 //
 // VectorModel sibling of quick_start.cpp. A point on a plane moves by a
 // bounded velocity. The VectorModel paints, encodes, and rolls raw
-// actions; a quadratic Head scores squared distance to a goal.
+// actions; a Head scores squared distance to a goal.
 
 #include "VectorModel.h"
 
@@ -96,9 +96,9 @@ int main()
     wm.RestoreBest();
 
     Head head;
-    head.Fit(zn, c, y, kTrain);
+    head.Fit(zn, c, y, kTrain, {}, 40, 16);
     const Head::Score sc = head.ScoreOn(zn, y);
-    std::printf("quadratic Head R2 on toy distance %.4f\n", sc.r2);
+    std::printf("Head R2 on toy distance %.4f\n", sc.r2);
     vm->SetHead("dist2", head);
 
     std::vector<float> z0(c), path((3 + 1) * c);

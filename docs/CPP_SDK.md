@@ -397,7 +397,7 @@ vm->SetActionBounds(low, high);
 vm->SetObsDim(obs_dim);
 vm->SetActDim(act_dim);
 
-Head h(Head::Kind::Quadratic, 1e-3f, Head::Sign::Cost);  // linear allowed
+Head h(Head::Sign::Cost);                                // LCN on the code cube
 h.Fit(z, code, y, count);                               // za omitted is the default
 h.Apply(z, dst);
 Head::Score s = h.ScoreOn(z, y);                        // R²; AUC only if y is strictly 0/1 both classes
@@ -548,7 +548,7 @@ value as given for a host that must serialize its own config.
 | WorldModel Save / Load | Config, Predictor weights (`HWM1`) | **No** |
 | WorldModel Weights() / LoadWeights() | Predictor weights, verbatim | **No** |
 | Decoder Save / Load | Config, input scale, weights | **No** |
-| VectorModel Save / Load | New magic `HVM1`: WorldModel payload plus optional norms, heads, dims, bounds, host metadata | **No** |
+| VectorModel Save / Load | New magic `HVM1` (file version 2): WorldModel payload plus optional norms, LCN Heads, dims, bounds, host metadata | **No** |
 
 VectorModel::Load of a bare `HWM1` file constructs a wm-only
 VectorModel. WorldModel::Load of an `HVM1` file throws bad magic. Do

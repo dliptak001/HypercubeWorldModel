@@ -483,51 +483,46 @@ def test_normaliser_fit_apply_roundtrip():
         hw.Normaliser.fit(x, clip=float("nan"))
 
 
-def test_head_quadratic_toy_distance():
+def test_head_toy_readout():
     rng = np.random.default_rng(1)
-    a = rng.uniform(-1, 1, (80, 2)).astype(np.float32)
-    b = rng.uniform(-1, 1, (80, 2)).astype(np.float32)
-    z = np.concatenate([a, b], axis=1)
-    y = ((a - b) ** 2).sum(1)
-    h = hw.Head(kind="quadratic", ridge=1e-3, sign="cost").fit(z, y)
-    assert h.score(z, y)["r2"] > 0.99
-    lin = hw.Head(kind="linear", ridge=1e-3).fit(z, y)
-    assert lin.score(z, y)["r2"] < h.score(z, y)["r2"]
+    z = rng.uniform(-1, 1, (80, 16)).astype(np.float32)
+    y = z[:, 0].copy()
+    h = hw.Head(sign="cost").fit(z, y, epochs=40, batch=16)
+    assert h.score(z, y)["r2"] > 0.7
     with pytest.raises(ValueError):
         h(z, z)
 
 
 def test_head_za_optional_and_plan_cost():
     rng = np.random.default_rng(2)
-    z = rng.standard_normal((16, 8)).astype(np.float32)
-    za = rng.standard_normal((16, 8)).astype(np.float32)
+    z = rng.standard_normal((16, 16)).astype(np.float32)
+    za = rng.standard_normal((16, 16)).astype(np.float32)
     y = z[:, 0] + 0.1 * za[:, 0]
-    h = hw.Head(kind="linear").fit(z, y, za)
+    h = hw.Head().fit(z, y, za, epochs=30, batch=8)
     p = h(z, za)
     assert p.shape == (16,)
     with pytest.raises(ValueError):
         h(z)
-    h2 = hw.Head(kind="linear", sign="reward").fit(z, z[:, 0])
-    zs = rng.standard_normal((3, 5, 8)).astype(np.float32)
+    h2 = hw.Head(sign="reward").fit(z, z[:, 0], epochs=20, batch=8)
+    zs = rng.standard_normal((3, 5, 16)).astype(np.float32)
     c = h2.plan_cost()(zs)
     assert c.shape == (3,)
-    # reward head negates; a cost head on the same y has the opposite sign
-    h3 = hw.Head(kind="linear", sign="cost").fit(z, z[:, 0])
-    assert np.allclose(h3.plan_cost()(zs), -c)
+    h3 = hw.Head(sign="cost").fit(z, z[:, 0], epochs=20, batch=8)
+    assert np.allclose(h3.plan_cost()(zs), -c, atol=1e-5)
 
 
 def test_head_auc_binary_and_ties():
-    z = np.ones((4, 4), np.float32)
-    y = np.array([0, 0, 1, 1], np.float32)
-    h = hw.Head(kind="linear").fit(z, y)
+    z = np.ones((8, 16), np.float32)
+    y = np.array([0, 0, 0, 0, 1, 1, 1, 1], np.float32)
+    h = hw.Head().fit(z, y, epochs=8, batch=8)
     s = h.score(z, y)
     assert "auc" in s
     assert abs(s["auc"] - 0.5) < 1e-5
-    z2 = np.zeros((4, 4), np.float32)
-    z2[:, 0] = [0, 0, 1, 1]
-    h2 = hw.Head(kind="linear").fit(z2, y)
+    z2 = np.zeros((8, 16), np.float32)
+    z2[:, 0] = [0, 0, 0, 0, 1, 1, 1, 1]
+    h2 = hw.Head().fit(z2, y, epochs=40, batch=8)
     assert h2.score(z2, y)["auc"] > 0.9
-    cont = hw.Head(kind="linear", sign="reward").fit(z2, z2[:, 0] + 0.3)
+    cont = hw.Head(sign="reward").fit(z2, z2[:, 0] + 0.3, epochs=20, batch=8)
     assert "auc" not in cont.score(z2, z2[:, 0] + 0.3)
 
 
@@ -564,7 +559,7 @@ def test_vector_model_save_load_and_hwm1(tmp_path):
     vm = hw.VectorModel(wm, obs_norm=norm, action_low=[-1, -1], action_high=[1, 1])
     z = vm.encode(obs)
     y = (obs ** 2).sum(1)
-    head = hw.Head(kind="linear").fit(z, y)
+    head = hw.Head().fit(z, y, epochs=20, batch=8)
     vm.set_head("dist2", head)
     vm.set_meta("domain", "toy")
     path = tmp_path / "model.hvm"

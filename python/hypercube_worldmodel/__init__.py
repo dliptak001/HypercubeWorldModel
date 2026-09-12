@@ -921,14 +921,14 @@ def action_sensitivity(z, predict, encode_action, act_dim, mse, rng, n=4000):
                                           float(mse))
 
 
-def lin_r2(z, y, z_val, y_val, ridge=1e-4):
-    """Per-dimension val R² of linear ridge from z to y. Returns min, mean, r2."""
+def lin_r2(z, y, z_val, y_val):
+    """Per-dimension val R² of a linear map z → y. Returns min, mean, r2."""
     y = np.asarray(y, np.float32)
     yv = np.asarray(y_val, np.float32)
     if y.ndim == 1:
         y = y[:, None]
         yv = yv[:, None]
-    return _lin_r2(_f32(z), _f32(y), _f32(z_val), _f32(yv), float(ridge))
+    return _lin_r2(_f32(z), _f32(y), _f32(z_val), _f32(yv))
 
 
 def rollout_error(model, obs_ep, act_ep, H: int, windows: int, rng):
@@ -1007,10 +1007,15 @@ class Normaliser:
 
 
 class Head:
-    """kind is the feature map; sign tells plan_cost whether to negate."""
+    """LCN on a code cube; sign tells plan_cost whether to negate."""
 
-    def __init__(self, kind: str = "quadratic", ridge: float = 1e-3, sign: str = "cost"):
-        self._core = _Head(str(kind), float(ridge), str(sign))
+    def __init__(self, sign: str = "cost", seed: int = 1, z_max: int = 0,
+                 gather_span: int = 2, tanh_last: bool = False,
+                 lr: float = 1e-2, lr_min_frac: float = 0.02,
+                 restore_best: bool = True):
+        self._core = _Head(str(sign), int(seed), int(z_max), int(gather_span),
+                           bool(tanh_last), float(lr), float(lr_min_frac),
+                           bool(restore_best))
 
     @classmethod
     def _wrap(cls, core) -> "Head":
@@ -1019,38 +1024,22 @@ class Head:
         return obj
 
     @property
-    def kind(self) -> str:
-        return str(self._core.kind)
-
-    @property
     def sign(self) -> str:
         return str(self._core.sign)
-
-    @property
-    def ridge(self) -> float:
-        return float(self._core.ridge)
 
     @property
     def uses_za(self) -> bool:
         return bool(self._core.uses_za)
 
     @property
-    def w(self):
-        return self._core.w()
+    def fitted(self) -> bool:
+        return bool(self._core.fitted)
 
     @property
-    def b(self) -> float:
-        return float(self._core.b)
+    def code_size(self) -> int:
+        return int(self._core.code_size)
 
-    @property
-    def mu(self):
-        return self._core.mu()
-
-    @property
-    def sd(self):
-        return self._core.sd()
-
-    def fit(self, z, y, za=None) -> "Head":
+    def fit(self, z, y, za=None, epochs: int = 40, batch: int = 32) -> "Head":
         z = _f32(z)
         if z.ndim == 1:
             z = z.reshape(1, -1)
@@ -1058,7 +1047,7 @@ class Head:
         za_a = None if za is None else _f32(za)
         if za_a is not None and za_a.ndim == 1:
             za_a = za_a.reshape(1, -1)
-        self._core.fit(z, y, za_a)
+        self._core.fit(z, y, za_a, int(epochs), int(batch))
         return self
 
     def __call__(self, z, za=None):
@@ -1092,40 +1081,37 @@ class Head:
         return cost
 
     def state(self):
+        cfg = self._core
         return {
-            "w": self.w, "b": self.b, "mu": self.mu, "sd": self.sd,
-            "ridge": self.ridge, "kind": self.kind, "sign": self.sign,
+            "sign": self.sign,
+            "seed": int(cfg.seed),
+            "z_max": int(cfg.z_max),
+            "gather_span": int(cfg.gather_span),
+            "tanh_last": bool(cfg.tanh_last),
+            "lr": float(cfg.lr),
+            "lr_min_frac": float(cfg.lr_min_frac),
+            "restore_best": bool(cfg.restore_best),
             "uses_za": np.bool_(self.uses_za),
+            "code": int(cfg.code_size),
+            "weights": cfg.weights(),
         }
 
     @classmethod
     def from_state(cls, d) -> "Head":
-        kind = str(np.asarray(d["kind"]).item() if "kind" in d else "quadratic")
         sign = str(np.asarray(d["sign"]).item() if "sign" in d else "cost")
-        if kind in ("cost", "reward"):
-            sign = kind
-            kind = "quadratic"
-        ridge = float(np.asarray(d["ridge"]))
-        uses_za = bool(np.asarray(d["uses_za"]).item()) if "uses_za" in d else False
-        w = _f32(np.ravel(d["w"]))
-        mu = _f32(np.ravel(d["mu"]))
-        sd = _f32(np.ravel(d["sd"]))
-        code = int(np.asarray(d["code"]).item()) if "code" in d else 0
-        if code == 0:
-            # Infer code from feature count: linear nf=c, quadratic nf=c+c(c+1)/2.
-            nf = int(w.size)
-            if uses_za:
-                if nf % 2:
-                    raise ValueError("Head.from_state: odd feature count with za")
-                nf //= 2
-            if kind == "linear":
-                code = nf
-            else:
-                # c + c(c+1)/2 = nf  =>  c(c+3)/2 = nf  => c^2 + 3c - 2 nf = 0
-                disc = 9 + 8 * nf
-                code = int((-3 + disc ** 0.5) / 2)
-        h = cls._wrap(_Head.from_state(kind, sign, ridge, uses_za, code, w,
-                                       float(np.asarray(d["b"])), mu, sd))
+        h = cls._wrap(_Head.from_state(
+            sign,
+            int(np.asarray(d.get("seed", 1))),
+            int(np.asarray(d.get("z_max", 0))),
+            int(np.asarray(d.get("gather_span", 2))),
+            bool(np.asarray(d.get("tanh_last", False)).item()),
+            float(np.asarray(d.get("lr", 1e-2))),
+            float(np.asarray(d.get("lr_min_frac", 0.02))),
+            bool(np.asarray(d.get("restore_best", True)).item()),
+            bool(np.asarray(d["uses_za"]).item()) if "uses_za" in d else False,
+            int(np.asarray(d["code"])),
+            _f32(np.ravel(d["weights"])),
+        ))
         return h
 
 

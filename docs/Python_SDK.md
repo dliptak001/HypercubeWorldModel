@@ -21,7 +21,7 @@
 | rollout | WorldModel.rollout takes action **codes**. VectorModel.rollout takes raw actions and encodes them once. |
 | action_space | Bounds: .low and .high on VectorModel. Not a gymnasium Box. The WorldModel never sees bounds. |
 | Normaliser | Per-dimension affine + clip into [-1, 1]. Optional on VectorModel. |
-| Head | Ridge from a code to a host y. kind linear or quadratic; sign cost or reward. |
+| Head | LCN from a code to a host y. sign cost or reward. |
 | min_dim, min_k | Capacity floors: max(6, ceil(log2(obs_dim))) and max(5, ceil(log2(act_dim))). |
 
 HypercubeWorldModel is a **world model with frozen encoders** on a
@@ -419,7 +419,7 @@ VectorModel always paints with paint_stripes. CEM is not in the package.
 
 ```python
 n = hw.Normaliser.fit(x, clip=3.0)          # x: (count, d) -> values in [-1, 1]
-h = hw.Head(kind="quadratic", ridge=1e-3, sign="cost")  # linear allowed
+h = hw.Head(sign="cost")                    # LCN on the code cube
 h.fit(z, y)                                 # za omitted is the default
 s = h.score(z, y)                           # dict: r2; auc only if y is strictly 0/1
 # h.plan_cost()(zs)                         # (B,) sum excluding z0, signed

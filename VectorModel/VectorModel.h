@@ -50,7 +50,7 @@ class VectorModel
 {
 public:
     static constexpr char kMagic[4] = {'H', 'V', 'M', '1'};
-    static constexpr uint32_t kFileVersion = 1;
+    static constexpr uint32_t kFileVersion = 2;
 
     /// Take ownership of @p wm.
     static std::unique_ptr<VectorModel> Create(std::unique_ptr<WorldModel> wm);

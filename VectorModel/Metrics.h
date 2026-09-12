@@ -45,13 +45,13 @@ struct LinearR2
     std::vector<float> r2;   // per target dimension
 };
 
-/// Per-dimension val R² of a linear ridge from z to y. @p z / @p y are
-/// train; @p z_val / @p y_val are val. y is already normalised (or any
-/// vector readout). Ridge is on (Z | 1), not multiplied by count.
+/// Per-dimension val R² of a linear map z → y, fit by SGD (bias plus
+/// weights, no regulariser). @p z / @p y are train; @p z_val / @p y_val
+/// are val.
 [[nodiscard]] LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
                                   std::span<const float> z_val, std::span<const float> y_val,
                                   size_t train_count, size_t val_count,
-                                  size_t z_dim, size_t y_dim, float ridge = 1e-4f);
+                                  size_t z_dim, size_t y_dim);
 
 struct RolloutError
 {

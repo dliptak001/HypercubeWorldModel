@@ -4,6 +4,7 @@
 #include "VectorModel.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -90,32 +91,44 @@ Normaliser ReadNorm(std::istream& is)
 void WriteHead(std::ostream& os, std::string_view name, const Head& h)
 {
     WriteString(os, name);
-    WriteRaw(os, static_cast<uint8_t>(h.GetKind() == Head::Kind::Quadratic ? 1 : 0));
     WriteRaw(os, static_cast<uint8_t>(h.GetSign() == Head::Sign::Reward ? 1 : 0));
-    WriteRaw(os, h.Ridge());
     WriteRaw(os, static_cast<uint8_t>(h.UsesZa() ? 1 : 0));
     WriteRaw(os, static_cast<uint64_t>(h.CodeSize()));
-    WriteRaw(os, h.Bias());
-    WriteVec(os, h.Weights());
-    WriteVec(os, h.Mu());
-    WriteVec(os, h.Sd());
+    const Head::Config cfg = h.GetConfig();
+    WriteRaw(os, cfg.seed);
+    WriteRaw(os, static_cast<uint64_t>(cfg.z_max));
+    WriteRaw(os, static_cast<uint64_t>(cfg.gather_span));
+    WriteRaw(os, static_cast<uint8_t>(cfg.tanh_last ? 1 : 0));
+    WriteRaw(os, cfg.lr);
+    WriteRaw(os, cfg.lr_min_frac);
+    WriteRaw(os, static_cast<int32_t>(cfg.lr_decay_epochs));
+    WriteRaw(os, static_cast<uint8_t>(cfg.restore_best ? 1 : 0));
+    const LCNConfig nc = h.Net().Config();
+    WriteRaw(os, static_cast<uint64_t>(nc.dim));
+    WriteRaw(os, static_cast<uint64_t>(nc.z_max));
+    WriteVec(os, h.Net().Weights());
 }
 
 std::pair<std::string, Head> ReadHead(std::istream& is)
 {
     const std::string name = ReadString(is, "head.name");
-    const auto kind = ReadRaw<uint8_t>(is, "head.kind") ? Head::Kind::Quadratic
-                                                        : Head::Kind::Linear;
-    const auto sign = ReadRaw<uint8_t>(is, "head.sign") ? Head::Sign::Reward
-                                                        : Head::Sign::Cost;
-    const float ridge = ReadRaw<float>(is, "head.ridge");
+    Head::Config cfg;
+    cfg.sign = ReadRaw<uint8_t>(is, "head.sign") ? Head::Sign::Reward : Head::Sign::Cost;
     const bool uses_za = ReadRaw<uint8_t>(is, "head.uses_za") != 0;
     const size_t code = static_cast<size_t>(ReadRaw<uint64_t>(is, "head.code"));
-    const float b = ReadRaw<float>(is, "head.b");
-    const auto w = ReadVec(is, "head.w");
-    const auto mu = ReadVec(is, "head.mu");
-    const auto sd = ReadVec(is, "head.sd");
-    return {name, Head::FromState(kind, sign, ridge, uses_za, code, w, b, mu, sd)};
+    cfg.seed = ReadRaw<uint64_t>(is, "head.seed");
+    cfg.z_max = static_cast<size_t>(ReadRaw<uint64_t>(is, "head.z_max"));
+    cfg.gather_span = static_cast<size_t>(ReadRaw<uint64_t>(is, "head.gather_span"));
+    cfg.tanh_last = ReadRaw<uint8_t>(is, "head.tanh_last") != 0;
+    cfg.lr = ReadRaw<float>(is, "head.lr");
+    cfg.lr_min_frac = ReadRaw<float>(is, "head.lr_min_frac");
+    cfg.lr_decay_epochs = static_cast<int>(ReadRaw<int32_t>(is, "head.lr_decay_epochs"));
+    cfg.restore_best = ReadRaw<uint8_t>(is, "head.restore_best") != 0;
+    (void)ReadRaw<uint64_t>(is, "head.net_dim");
+    const auto resolved_z = ReadRaw<uint64_t>(is, "head.net_z_max");
+    cfg.z_max = static_cast<size_t>(resolved_z);
+    const auto w = ReadVec(is, "head.weights");
+    return {name, Head::FromState(cfg, uses_za, code, w)};
 }
 
 size_t CeilLog2(size_t n)

@@ -2,7 +2,6 @@
 // Copyright 2026 David Charles Liptak
 
 #include "Metrics.h"
-#include "Solver.h"
 #include "VectorModel.h"
 
 #include <bit>
@@ -103,7 +102,7 @@ ActionSensitivity MeasureActionSensitivity(VectorModel& vm, std::span<const floa
 LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
                     std::span<const float> z_val, std::span<const float> y_val,
                     size_t train_count, size_t val_count,
-                    size_t z_dim, size_t y_dim, float ridge)
+                    size_t z_dim, size_t y_dim)
 {
     if (train_count == 0 || val_count == 0 || z_dim == 0 || y_dim == 0)
         throw std::invalid_argument("LinearR2On needs non-zero counts and dims");
@@ -112,37 +111,42 @@ LinearR2 LinearR2On(std::span<const float> z, std::span<const float> y,
     if (z_val.size() != val_count * z_dim || y_val.size() != val_count * y_dim)
         throw std::invalid_argument("LinearR2On val z/y length");
 
-    const size_t p = z_dim + 1;
-    std::vector<double> A(p * p, 0.0), B(p * y_dim, 0.0);
+    std::vector<double> w(z_dim * y_dim, 0.0), b(y_dim, 0.0);
     for (size_t i = 0; i < train_count; ++i)
+        for (size_t k = 0; k < y_dim; ++k)
+            b[k] += static_cast<double>(y[i * y_dim + k]);
+    const double n = static_cast<double>(train_count);
+    for (size_t k = 0; k < y_dim; ++k)
+        b[k] /= n;
+
+    constexpr int kEpochs = 40;
+    constexpr double kLr = 0.05;
+    for (int e = 0; e < kEpochs; ++e)
     {
-        for (size_t a = 0; a < p; ++a)
+        for (size_t i = 0; i < train_count; ++i)
         {
-            const double za = a < z_dim ? static_cast<double>(z[i * z_dim + a]) : 1.0;
-            for (size_t b = 0; b < p; ++b)
-            {
-                const double zb = b < z_dim ? static_cast<double>(z[i * z_dim + b]) : 1.0;
-                A[a * p + b] += za * zb;
-            }
+            const float* zi = z.data() + i * z_dim;
             for (size_t k = 0; k < y_dim; ++k)
-                B[a * y_dim + k] += za * static_cast<double>(y[i * y_dim + k]);
+            {
+                double pred = b[k];
+                for (size_t j = 0; j < z_dim; ++j)
+                    pred += w[j * y_dim + k] * static_cast<double>(zi[j]);
+                const double err = pred - static_cast<double>(y[i * y_dim + k]);
+                b[k] -= kLr * err;
+                for (size_t j = 0; j < z_dim; ++j)
+                    w[j * y_dim + k] -= kLr * err * static_cast<double>(zi[j]);
+            }
         }
     }
-    for (size_t a = 0; a < p; ++a)
-        A[a * p + a] += static_cast<double>(ridge);
-
-    DenseSolve(A, p, B, y_dim);
 
     std::vector<double> pred(val_count * y_dim, 0.0);
     for (size_t i = 0; i < val_count; ++i)
         for (size_t k = 0; k < y_dim; ++k)
         {
-            double s = 0.0;
-            for (size_t a = 0; a < p; ++a)
-            {
-                const double za = a < z_dim ? static_cast<double>(z_val[i * z_dim + a]) : 1.0;
-                s += za * B[a * y_dim + k];
-            }
+            double s = b[k];
+            const float* zi = z_val.data() + i * z_dim;
+            for (size_t j = 0; j < z_dim; ++j)
+                s += w[j * y_dim + k] * static_cast<double>(zi[j]);
             pred[i * y_dim + k] = s;
         }
 

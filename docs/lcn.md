@@ -27,8 +27,8 @@
 
 The Predictor owns this net. It is the only part of the world model
 that trains: it guesses the next view code. The Decoder owns one too,
-as a reconstruction meter. The Encoder is a frozen reservoir, not an
-LCN.
+as a reconstruction meter. Head owns one as the planner's scalar.
+The Encoder is a frozen reservoir, not an LCN.
 
 A locally connected net on a cube means each vertex keeps its own
 small weight table over its neighbors and a short lookback, and
@@ -72,7 +72,10 @@ the last depth when tanh_last is false.
 Each depth is one Hamming hop. A vertex h hops from a signal needs
 depth h to see it. z_max = dim is antipodal reach: every vertex can
 see every other. Deeper than that is extra capacity, not extra
-geometry.
+geometry. If you read only vertex 0, that vertex needs enough depth
+to see the parts of the field that matter. z_max = 2 is two hops.
+Pooling the output field does not give extra reach: vertices outside
+the hop radius are still uninformed.
 
 gather_span is the lookback, not the hop. Span 2 already lets a depth
 mix the previous output with the one before it. Wider span is more
@@ -114,10 +117,17 @@ train.Adam();
 Loss reads the most recent Forward. The target may be shorter than N:
 only that prefix carries a target and a gradient seed; the rest of
 the output is unconstrained. The Predictor uses that prefix so
-WorldModel can take loss on E(x) and leave E(a)'s half free.
+WorldModel can take loss on E(x) and leave E(a)'s half free. A scalar
+Head is the same idea with length 1: train vertex 0, read vertex 0.
+Do not copy a scalar onto all N vertices. Every targeted vertex adds
+to the SSE and to the gradient, so a full-field target is N times a
+one-vertex target, and vertices that never saw the signal still try
+to match y.
 
 Backward walks the depths in reverse and **sums** into the gradient.
-The Adam step therefore scales with batch size. The stale-gradient
+The Adam step therefore scales with batch size, and with how many
+vertices the Loss targeted. An lr that is right for a short prefix
+is wrong for a full-cube target. The stale-gradient
 guard throws if Backward does not see an unconsumed Loss for the
 Forward still in the net: Forward(a), Loss, Forward(b), Backward would
 otherwise mix b's activations with a's error.
@@ -141,8 +151,8 @@ LCN/
     LCNTraining.cpp
 ```
 
-CMake target LCN, a static library with no further links. Predictor
-and Decoder link it. Nothing in LCN includes Encoder.
+CMake target LCN, a static library with no further links. Predictor,
+Decoder, and Head link it. Nothing in LCN includes Encoder.
 
 ## Interface
 
@@ -228,8 +238,8 @@ longer than N.
 - One LCN is not thread-safe. Replicas are separate LCN plus
   LCNTraining pairs that share weights through LoadWeights and reduce
   with AddGrad.
-- Predictor and Decoder are the public faces that own an LCN. Use
-  those unless you are writing a third one.
+- Predictor, Decoder, and Head each own an LCN. Head is the scalar
+  readout for a planner.
 
 The Predictor is [predictor.md](predictor.md). The Decoder is
 [decoder.md](decoder.md). The WorldModel owns a Predictor, not an LCN

@@ -2,13 +2,18 @@
 // Copyright 2026 David Charles Liptak
 
 #include "Head.h"
-#include "Solver.h"
+#include "LCNTraining.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <numeric>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -22,41 +27,87 @@ float QuietNaN()
     return std::bit_cast<float>(0x7fc00000u);
 }
 
-size_t CodeFeatureCount(Head::Kind kind, size_t code)
+size_t CubeDim(size_t n)
 {
-    if (kind == Head::Kind::Linear)
-        return code;
-    return code + code * (code + 1) / 2;
-}
-
-void CodeFeaturesRow(Head::Kind kind, const float* z, size_t code, float* out)
-{
-    if (kind == Head::Kind::Linear)
-    {
-        for (size_t i = 0; i < code; ++i)
-            out[i] = z[i];
-        return;
-    }
-    for (size_t i = 0; i < code; ++i)
-        out[i] = z[i];
-    size_t p = code;
-    for (size_t i = 0; i < code; ++i)
-        for (size_t j = i; j < code; ++j)
-            out[p++] = z[i] * z[j];
+    if (n < 16 || (n & (n - 1)) != 0)
+        throw std::invalid_argument(
+            "Head code (or packed z||za) must be a power of two, at least 16");
+    size_t d = 0;
+    while ((size_t{1} << d) < n)
+        ++d;
+    if (d > 24)
+        throw std::invalid_argument("Head packed cube dim must be <= 24");
+    return d;
 }
 
 } // namespace
 
-Head::Head(Kind kind, float ridge, Sign sign)
-    : kind_(kind), sign_(sign), ridge_(ridge)
+Head::Head()
 {
-    if (!FiniteBits(ridge) || !(ridge > 0.f))
-        throw std::invalid_argument("Head ridge must be finite and > 0");
+    cfg_.sign = Sign::Cost;
+    cfg_.seed = 1;
+    cfg_.z_max = 0;
+    cfg_.gather_span = 2;
+    cfg_.tanh_last = false;
+    cfg_.lr = 1e-2f;
+    cfg_.lr_min_frac = 0.02f;
+    cfg_.lr_decay_epochs = 0;
+    cfg_.restore_best = true;
 }
 
-size_t Head::CodeFeatures() const
+Head::Head(Config cfg) : cfg_(cfg)
 {
-    return CodeFeatureCount(kind_, code_);
+    if (cfg_.gather_span < 2 || cfg_.gather_span > 6)
+        throw std::invalid_argument("Head gather_span must be in [2, 6]");
+    if (!FiniteBits(cfg_.lr) || !(cfg_.lr > 0.f))
+        throw std::invalid_argument("Head lr must be finite and > 0");
+    if (!FiniteBits(cfg_.lr_min_frac) || cfg_.lr_min_frac < 0.f || cfg_.lr_min_frac > 1.f)
+        throw std::invalid_argument("Head lr_min_frac must be in [0, 1]");
+}
+
+Head::Head(Sign sign)
+    : Head()
+{
+    cfg_.sign = sign;
+}
+
+Head::Head(const Head& o)
+    : cfg_(o.cfg_), uses_za_(o.uses_za_), fitted_(o.fitted_), code_(o.code_)
+{
+    if (o.net_)
+    {
+        net_ = LCN::Create(o.net_->Config());
+        net_->LoadWeights(o.net_->Weights());
+    }
+}
+
+Head& Head::operator=(const Head& o)
+{
+    if (this != &o)
+    {
+        cfg_ = o.cfg_;
+        uses_za_ = o.uses_za_;
+        fitted_ = o.fitted_;
+        code_ = o.code_;
+        net_.reset();
+        if (o.net_)
+        {
+            net_ = LCN::Create(o.net_->Config());
+            net_->LoadWeights(o.net_->Weights());
+        }
+    }
+    return *this;
+}
+
+Head::Head(Head&&) noexcept = default;
+Head& Head::operator=(Head&&) noexcept = default;
+Head::~Head() = default;
+
+const LCN& Head::Net() const
+{
+    if (!net_)
+        throw std::invalid_argument("Head::Net requires Fit");
+    return *net_;
 }
 
 void Head::CheckZa(bool has_za) const
@@ -67,23 +118,30 @@ void Head::CheckZa(bool has_za) const
         throw std::invalid_argument("Head was fit without za; omit za");
 }
 
-void Head::Features(std::span<const float> z, std::span<const float> za,
-                    size_t count, std::vector<float>& out) const
+void Head::EnsureNet(size_t field_n)
 {
-    const size_t cf = CodeFeatures();
-    const size_t nf = uses_za_ ? 2 * cf : cf;
-    out.resize(count * nf);
-    for (size_t i = 0; i < count; ++i)
-    {
-        CodeFeaturesRow(kind_, z.data() + i * code_, code_, out.data() + i * nf);
-        if (uses_za_)
-            CodeFeaturesRow(kind_, za.data() + i * code_, code_,
-                            out.data() + i * nf + cf);
-    }
+    const size_t dim = CubeDim(field_n);
+    net_ = LCN::Create(LCNConfig{.dim = dim,
+                                 .seed = cfg_.seed,
+                                 .z_max = cfg_.z_max,
+                                 .gather_span = cfg_.gather_span,
+                                 .tanh_last = cfg_.tanh_last});
+}
+
+void Head::Pack(const float* z, const float* za, std::span<float> field) const
+{
+    std::copy(z, z + code_, field.begin());
+    if (uses_za_)
+        std::copy(za, za + code_, field.begin() + static_cast<std::ptrdiff_t>(code_));
+}
+
+float Head::Readout() const
+{
+    return net_->Output()[0];
 }
 
 void Head::Fit(std::span<const float> z, size_t code, std::span<const float> y,
-               size_t count, std::span<const float> za)
+               size_t count, std::span<const float> za, int epochs, size_t batch)
 {
     if (code == 0)
         throw std::invalid_argument("Head::Fit code must be > 0");
@@ -93,78 +151,63 @@ void Head::Fit(std::span<const float> z, size_t code, std::span<const float> y,
         throw std::invalid_argument("Head::Fit z length must be count * code");
     if (y.size() != count)
         throw std::invalid_argument("Head::Fit y length must be count");
+    if (epochs <= 0)
+        throw std::invalid_argument("Head::Fit epochs must be > 0");
+    if (batch == 0)
+        throw std::invalid_argument("Head::Fit batch must be > 0");
     uses_za_ = !za.empty();
     if (uses_za_ && za.size() != count * code)
         throw std::invalid_argument("Head::Fit za length must be count * code");
     code_ = code;
 
-    std::vector<float> f32;
-    Features(z, za, count, f32);
-    const size_t nf = f32.size() / count;
+    const size_t field_n = uses_za_ ? 2 * code : code;
+    EnsureNet(field_n);
 
-    std::vector<double> f(f32.size());
-    for (size_t i = 0; i < f32.size(); ++i)
-        f[i] = static_cast<double>(f32[i]);
+    LCNTrainingConfig tc;
+    tc.lr = cfg_.lr;
+    tc.lr_min_frac = cfg_.lr_min_frac;
+    tc.lr_decay_epochs = cfg_.lr_decay_epochs;
+    tc.restore_best = cfg_.restore_best;
+    LCNTraining train(*net_, tc);
 
-    mu_.assign(nf, 0.f);
-    sd_.assign(nf, 0.f);
-    std::vector<double> mu(nf, 0.0), sd(nf, 0.0);
-    for (size_t i = 0; i < count; ++i)
-        for (size_t j = 0; j < nf; ++j)
-            mu[j] += f[i * nf + j];
-    const double n = static_cast<double>(count);
-    for (size_t j = 0; j < nf; ++j)
-        mu[j] /= n;
-    for (size_t i = 0; i < count; ++i)
-        for (size_t j = 0; j < nf; ++j)
-        {
-            const double d = f[i * nf + j] - mu[j];
-            sd[j] += d * d;
-        }
-    for (size_t j = 0; j < nf; ++j)
+    std::vector<float> field(field_n), target(1);
+    std::vector<size_t> idx(count);
+    std::iota(idx.begin(), idx.end(), 0);
+    std::mt19937_64 rng(cfg_.seed);
+
+    for (int epoch = 0; epoch < epochs; ++epoch)
     {
-        sd[j] = std::sqrt(sd[j] / n);
-        if (sd[j] < 1e-8)
-            sd[j] = 1e-8;
-        mu_[j] = static_cast<float>(mu[j]);
-        sd_[j] = static_cast<float>(sd[j]);
-    }
-    for (size_t i = 0; i < count; ++i)
-        for (size_t j = 0; j < nf; ++j)
-            f[i * nf + j] = (f[i * nf + j] - mu[j]) / sd[j];
-
-    double ymean = 0.0;
-    for (size_t i = 0; i < count; ++i)
-        ymean += static_cast<double>(y[i]);
-    ymean /= n;
-    b_ = static_cast<float>(ymean);
-
-    std::vector<double> A(nf * nf, 0.0), rhs(nf, 0.0);
-    for (size_t i = 0; i < count; ++i)
-    {
-        const double yc = static_cast<double>(y[i]) - ymean;
-        const double* fi = f.data() + i * nf;
-        for (size_t a = 0; a < nf; ++a)
+        train.SetEpoch(epoch, epochs);
+        std::shuffle(idx.begin(), idx.end(), rng);
+        double epoch_loss = 0.0;
+        int nloss = 0;
+        for (size_t start = 0; start < count; start += batch)
         {
-            rhs[a] += fi[a] * yc;
-            for (size_t b = 0; b < nf; ++b)
-                A[a * nf + b] += fi[a] * fi[b];
+            train.ZeroGrad();
+            const size_t end = std::min(start + batch, count);
+            for (size_t t = start; t < end; ++t)
+            {
+                const size_t i = idx[t];
+                Pack(z.data() + i * code, uses_za_ ? za.data() + i * code : nullptr, field);
+                net_->Forward(field);
+                target[0] = y[i];
+                epoch_loss += static_cast<double>(train.Loss(target));
+                ++nloss;
+                train.Backward();
+            }
+            train.Adam();
         }
+        if (nloss)
+            train.Observe(static_cast<float>(epoch_loss / nloss), epoch);
     }
-    const double lam = static_cast<double>(ridge_) * n;
-    for (size_t a = 0; a < nf; ++a)
-        A[a * nf + a] += lam;
-
-    DenseSolve(A, nf, rhs, 1);
-    w_.resize(nf);
-    for (size_t j = 0; j < nf; ++j)
-        w_[j] = static_cast<float>(rhs[j]);
+    train.RestoreBest();
+    fitted_ = true;
 }
 
 void Head::Apply(std::span<const float> z, std::span<float> dst,
                  std::span<const float> za) const
 {
-    if (w_.empty())
+    if (!fitted_ || !net_)
         throw std::invalid_argument("Head::Apply requires Fit");
     if (code_ == 0 || z.size() % code_ != 0)
         throw std::invalid_argument("Head::Apply z length must be a multiple of code");
@@ -175,17 +218,12 @@ void Head::Apply(std::span<const float> z, std::span<float> dst,
     if (uses_za_ && za.size() != count * code_)
         throw std::invalid_argument("Head::Apply za length must be count * code");
 
-    std::vector<float> f;
-    Features(z, za, count, f);
-    const size_t nf = w_.size();
+    std::vector<float> field(net_->N());
     for (size_t i = 0; i < count; ++i)
     {
-        double s = static_cast<double>(b_);
-        const float* fi = f.data() + i * nf;
-        for (size_t j = 0; j < nf; ++j)
-            s += static_cast<double>((fi[j] - mu_[j]) / sd_[j]) *
-                 static_cast<double>(w_[j]);
-        dst[i] = static_cast<float>(s);
+        Pack(z.data() + i * code_, uses_za_ ? za.data() + i * code_ : nullptr, field);
+        net_->Forward(field);
+        dst[i] = Readout();
     }
 }
 
@@ -258,7 +296,7 @@ void Head::PlanCost(std::span<const float> zs, size_t batch, size_t h1,
     if (uses_za_)
         throw std::invalid_argument(
             "plan_cost scores view codes only; this Head was fit with za");
-    if (w_.empty())
+    if (!fitted_ || !net_)
         throw std::invalid_argument("Head::PlanCost requires Fit");
     if (batch == 0 || h1 < 2)
         throw std::invalid_argument("Head::PlanCost needs batch > 0 and H+1 >= 2");
@@ -276,7 +314,7 @@ void Head::PlanCost(std::span<const float> zs, size_t batch, size_t h1,
                     zs[(b * h1 + (t + 1)) * code_ + c];
     std::vector<float> pred(batch * steps);
     Apply(z, pred);
-    const float sgn = sign_ == Sign::Reward ? -1.f : 1.f;
+    const float sgn = cfg_.sign == Sign::Reward ? -1.f : 1.f;
     for (size_t b = 0; b < batch; ++b)
     {
         double s = 0.0;
@@ -286,22 +324,15 @@ void Head::PlanCost(std::span<const float> zs, size_t batch, size_t h1,
     }
 }
 
-Head Head::FromState(Kind kind, Sign sign, float ridge, bool uses_za,
-                     size_t code, std::span<const float> w, float b,
-                     std::span<const float> mu, std::span<const float> sd)
+Head Head::FromState(const Config& cfg, bool uses_za, size_t code,
+                     std::span<const float> weights)
 {
-    Head h(kind, ridge, sign);
-    if (w.empty() || w.size() != mu.size() || w.size() != sd.size())
-        throw std::invalid_argument("Head::FromState w, mu, sd must be the same non-zero length");
-    const size_t cf = CodeFeatureCount(kind, code);
-    const size_t expect = uses_za ? 2 * cf : cf;
-    if (w.size() != expect)
-        throw std::invalid_argument("Head::FromState feature count does not match kind/code/za");
+    Head h(cfg);
     h.uses_za_ = uses_za;
     h.code_ = code;
-    h.w_.assign(w.begin(), w.end());
-    h.mu_.assign(mu.begin(), mu.end());
-    h.sd_.assign(sd.begin(), sd.end());
-    h.b_ = b;
+    const size_t field_n = uses_za ? 2 * code : code;
+    h.EnsureNet(field_n);
+    h.net_->LoadWeights(weights);
+    h.fitted_ = true;
     return h;
 }

@@ -12,6 +12,7 @@
 
 #include <optional>
 
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -592,20 +593,30 @@ PYBIND11_MODULE(_core, m)
     // ── Head ──
 
     py::class_<Head>(m, "_Head")
-        .def(py::init([](const std::string& kind, float ridge, const std::string& sign) {
-            Head::Kind k = Head::Kind::Quadratic;
-            if (kind == "linear")
-                k = Head::Kind::Linear;
-            else if (kind != "quadratic")
-                throw std::invalid_argument("kind must be 'linear' or 'quadratic', not " + kind);
+        .def(py::init([](const std::string& sign, uint64_t seed, size_t z_max,
+                         size_t gather_span, bool tanh_last, float lr, float lr_min_frac,
+                         bool restore_best) {
             Head::Sign s = Head::Sign::Cost;
             if (sign == "reward")
                 s = Head::Sign::Reward;
             else if (sign != "cost")
                 throw std::invalid_argument("sign must be 'cost' or 'reward', not " + sign);
-            return Head(k, ridge, s);
-        }), py::arg("kind") = "quadratic", py::arg("ridge") = 1e-3f, py::arg("sign") = "cost")
-        .def("fit", [](Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za) {
+            Head::Config cfg;
+            cfg.sign = s;
+            cfg.seed = seed;
+            cfg.z_max = z_max;
+            cfg.gather_span = gather_span;
+            cfg.tanh_last = tanh_last;
+            cfg.lr = lr;
+            cfg.lr_min_frac = lr_min_frac;
+            cfg.restore_best = restore_best;
+            return Head(cfg);
+        }), py::arg("sign") = "cost", py::arg("seed") = 1, py::arg("z_max") = 0,
+            py::arg("gather_span") = 2, py::arg("tanh_last") = false,
+            py::arg("lr") = 1e-2f, py::arg("lr_min_frac") = 0.02f,
+            py::arg("restore_best") = true)
+        .def("fit", [](Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za,
+                       int epochs, size_t batch) {
             const auto zb = z.request(), yb = y.request();
             if (zb.ndim != 2)
                 throw std::invalid_argument("Head.fit z must be 2-D (count, code)");
@@ -628,8 +639,9 @@ PYBIND11_MODULE(_core, m)
             self.Fit(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
                      code,
                      std::span<const float>(static_cast<const float*>(yb.ptr), count),
-                     count, za_span);
-        }, py::arg("z"), py::arg("y"), py::arg("za") = py::none())
+                     count, za_span, epochs, batch);
+        }, py::arg("z"), py::arg("y"), py::arg("za") = py::none(),
+            py::arg("epochs") = 40, py::arg("batch") = 32)
         .def("apply", [](const Head& self, FloatArray z, std::optional<FloatArray> za) {
             const auto zb = z.request();
             if (zb.ndim != 2)
@@ -695,37 +707,52 @@ PYBIND11_MODULE(_core, m)
             }
             return out;
         }, py::arg("zs"))
-        .def_static("from_state", [](const std::string& kind, const std::string& sign, float ridge,
-                                     bool uses_za, size_t code, FloatArray w, float b,
-                                     FloatArray mu, FloatArray sd) {
-            Head::Kind k = kind == "linear" ? Head::Kind::Linear : Head::Kind::Quadratic;
-            Head::Sign s = sign == "reward" ? Head::Sign::Reward : Head::Sign::Cost;
-            if (kind != "linear" && kind != "quadratic")
-                throw std::invalid_argument("kind must be 'linear' or 'quadratic'");
-            if (sign != "cost" && sign != "reward")
+        .def_static("from_state", [](const std::string& sign, uint64_t seed, size_t z_max,
+                                     size_t gather_span, bool tanh_last, float lr,
+                                     float lr_min_frac, bool restore_best, bool uses_za,
+                                     size_t code, FloatArray weights) {
+            Head::Sign s = Head::Sign::Cost;
+            if (sign == "reward")
+                s = Head::Sign::Reward;
+            else if (sign != "cost")
                 throw std::invalid_argument("sign must be 'cost' or 'reward'");
-            const auto wb = w.request(), mb = mu.request(), sb = sd.request();
+            Head::Config cfg;
+            cfg.sign = s;
+            cfg.seed = seed;
+            cfg.z_max = z_max;
+            cfg.gather_span = gather_span;
+            cfg.tanh_last = tanh_last;
+            cfg.lr = lr;
+            cfg.lr_min_frac = lr_min_frac;
+            cfg.restore_best = restore_best;
+            const auto wb = weights.request();
             return Head::FromState(
-                k, s, ridge, uses_za, code,
-                std::span<const float>(static_cast<const float*>(wb.ptr), static_cast<size_t>(wb.size)),
-                b,
-                std::span<const float>(static_cast<const float*>(mb.ptr), static_cast<size_t>(mb.size)),
-                std::span<const float>(static_cast<const float*>(sb.ptr), static_cast<size_t>(sb.size)));
-        })
-        .def_property_readonly("kind", [](const Head& self) {
-            return self.GetKind() == Head::Kind::Linear ? "linear" : "quadratic";
+                cfg, uses_za, code,
+                std::span<const float>(static_cast<const float*>(wb.ptr),
+                                       static_cast<size_t>(wb.size)));
         })
         .def_property_readonly("sign", [](const Head& self) {
             return self.GetSign() == Head::Sign::Reward ? "reward" : "cost";
         })
-        .def_property_readonly("ridge", &Head::Ridge)
         .def_property_readonly("uses_za", &Head::UsesZa)
         .def_property_readonly("fitted", &Head::Fitted)
         .def_property_readonly("code_size", &Head::CodeSize)
-        .def_property_readonly("b", &Head::Bias)
-        .def("w", [](const Head& self) { return VectorToArray(self.Weights()); })
-        .def("mu", [](const Head& self) { return VectorToArray(self.Mu()); })
-        .def("sd", [](const Head& self) { return VectorToArray(self.Sd()); });
+        .def_property_readonly("z_max", [](const Head& self) { return self.GetConfig().z_max; })
+        .def_property_readonly("gather_span", [](const Head& self) {
+            return self.GetConfig().gather_span;
+        })
+        .def_property_readonly("seed", [](const Head& self) { return self.GetConfig().seed; })
+        .def_property_readonly("tanh_last", [](const Head& self) {
+            return self.GetConfig().tanh_last;
+        })
+        .def_property_readonly("lr", [](const Head& self) { return self.GetConfig().lr; })
+        .def_property_readonly("lr_min_frac", [](const Head& self) {
+            return self.GetConfig().lr_min_frac;
+        })
+        .def_property_readonly("restore_best", [](const Head& self) {
+            return self.GetConfig().restore_best;
+        })
+        .def("weights", [](const Head& self) { return VectorToArray(self.Net().Weights()); });
 
     // ── VectorModel ──
 
@@ -930,7 +957,7 @@ PYBIND11_MODULE(_core, m)
         d["act"] = s.act;
         return d;
     }, py::arg("pred1"), py::arg("pred2"), py::arg("mse"));
-    m.def("lin_r2", [](FloatArray z, FloatArray y, FloatArray zv, FloatArray yv, float ridge) {
+    m.def("lin_r2", [](FloatArray z, FloatArray y, FloatArray zv, FloatArray yv) {
         const auto zb = z.request(), yb = y.request(), zvb = zv.request(), yvb = yv.request();
         if (zb.ndim != 2 || yb.ndim != 2 || zvb.ndim != 2 || yvb.ndim != 2)
             throw std::invalid_argument("lin_r2 z and y must be 2-D");
@@ -946,14 +973,14 @@ PYBIND11_MODULE(_core, m)
                 std::span<const float>(static_cast<const float*>(yb.ptr), n * yd),
                 std::span<const float>(static_cast<const float*>(zvb.ptr), nv * zd),
                 std::span<const float>(static_cast<const float*>(yvb.ptr), nv * yd),
-                n, nv, zd, yd, ridge);
+                n, nv, zd, yd);
         }
         py::dict d;
         d["min"] = r.min;
         d["mean"] = r.mean;
         d["r2"] = VectorToArray(r.r2);
         return d;
-    }, py::arg("z"), py::arg("y"), py::arg("z_val"), py::arg("y_val"), py::arg("ridge") = 1e-4f);
+    }, py::arg("z"), py::arg("y"), py::arg("z_val"), py::arg("y_val"));
     m.def("rollout_error_from_codes", [](FloatArray z_pred, FloatArray z_true) {
         const auto a = z_pred.request(), b = z_true.request();
         if (a.ndim != 3 || b.ndim != 3)
