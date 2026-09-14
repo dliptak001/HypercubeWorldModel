@@ -162,8 +162,8 @@ def _fit_loop(core, count, epochs, batch_size, shuffle_seed, verbose,
         metric = evaluate()
         observed = mean_loss if metric is None else metric
         if verbose:
-            tail = "" if metric is None else f" val={metric:.6f}"
-            print(f"epoch={epoch}/{epochs} train_loss={mean_loss:.6f}{tail}")
+            tail = "" if metric is None else f" val={metric:.8f}"
+            print(f"epoch={epoch}/{epochs} train_loss={mean_loss:.8f}{tail}")
         core.observe(observed, epoch)
     core.restore_best()
 
