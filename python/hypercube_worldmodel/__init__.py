@@ -29,7 +29,7 @@ import pickle
 import numpy as np
 
 from ._core import _Decoder, _WorldModel, cpp_version
-from ._core import _Head, _Normaliser, _VectorModel
+from ._core import _Actor, _Head, _Normaliser, _VectorModel
 from ._core import paint_stripes as _paint_stripes
 from ._core import mean_abs as _mean_abs
 from ._core import rms as _rms
@@ -43,7 +43,7 @@ from ._core import rollout_error_from_codes as _rollout_error_from_codes
 from ._version import __version__
 
 __all__ = [
-    "WorldModel", "Decoder", "Normaliser", "Head", "VectorModel", "ActionSpace",
+    "WorldModel", "Decoder", "Normaliser", "Head", "Actor", "VectorModel", "ActionSpace",
     "paint_stripes", "mean_abs", "rms", "min_dim", "min_k",
     "no_change_mse", "one_step_ratio", "action_sensitivity", "lin_r2",
     "rollout_error", "__version__",
@@ -1283,6 +1283,117 @@ class Head:
             _f32(np.ravel(d["weights"])),
         ))
         return h
+
+
+class Actor:
+    """LCN on a code cube; readout is vertices 0 .. act_dim-1.
+
+    One instance is not thread-safe for concurrent calls. Predict and
+    score write the LCN's forward buffers. fit releases the GIL.
+    """
+
+    def __init__(self, seed: int = 1, z_max: int = 0, gather_span: int = 2,
+                 tanh_last: bool = False, lr: float = 1e-2, lr_min_frac: float = 0.02,
+                 lr_decay_epochs: int = 0, restore_best: bool = True):
+        self._core = _Actor(int(seed), int(z_max), int(gather_span), bool(tanh_last),
+                            float(lr), float(lr_min_frac), int(lr_decay_epochs),
+                            bool(restore_best))
+
+    @classmethod
+    def _wrap(cls, core) -> "Actor":
+        obj = cls.__new__(cls)
+        obj._core = core
+        return obj
+
+    @property
+    def fitted(self) -> bool:
+        return bool(self._core.fitted)
+
+    @property
+    def code_size(self) -> int:
+        return int(self._core.code_size)
+
+    @property
+    def act_dim(self) -> int:
+        return int(self._core.act_dim)
+
+    def fit(self, z, a, *, epochs: int = 40, batch_size: int = 32) -> "Actor":
+        """Fit on codes ``z`` against actions ``a``."""
+        z = _f32(z)
+        if z.ndim == 1:
+            z = z.reshape(1, -1)
+        a = _f32(a)
+        if a.ndim == 1:
+            a = a.reshape(1, -1)
+        self._core.fit(z, a, int(epochs), int(batch_size))
+        return self
+
+    def predict(self, z, out=None):
+        """One action per code. ``z`` is ``(code_size,)`` or ``(count, code_size)``.
+
+        Returns ``(act_dim,)`` or ``(count, act_dim)``. ``out`` is optional
+        caller storage: ``(act_dim,)`` for a 1-D code, ``(count, act_dim)``
+        for a batch (``(1, act_dim)`` is also accepted for one code).
+        """
+        z = _f32(z)
+        one = z.ndim == 1
+        if one:
+            z = z.reshape(1, -1)
+        if out is None:
+            got = self._core.predict(z)
+            return got[0] if one else got
+        if not self.fitted:
+            self._core.predict(z)
+        act = self.act_dim
+        if one and getattr(out, "ndim", 0) == 1:
+            buf = _as_out(out, (act,))
+            self._core.predict(z, buf.reshape(1, act))
+            return out
+        buf = _as_out(out, (z.shape[0], act))
+        self._core.predict(z, buf)
+        return out
+
+    def __call__(self, z, out=None):
+        return self.predict(z, out=out)
+
+    def score(self, z, a):
+        z = _f32(z)
+        if z.ndim == 1:
+            z = z.reshape(1, -1)
+        a = _f32(a)
+        if a.ndim == 1:
+            a = a.reshape(1, -1)
+        return self._core.score(z, a)
+
+    def state(self):
+        cfg = self._core
+        return {
+            "seed": int(cfg.seed),
+            "z_max": int(cfg.z_max),
+            "gather_span": int(cfg.gather_span),
+            "tanh_last": bool(cfg.tanh_last),
+            "lr": float(cfg.lr),
+            "lr_min_frac": float(cfg.lr_min_frac),
+            "restore_best": bool(cfg.restore_best),
+            "code": int(cfg.code_size),
+            "act_dim": int(cfg.act_dim),
+            "weights": cfg.weights(),
+        }
+
+    @classmethod
+    def from_state(cls, d) -> "Actor":
+        return cls._wrap(_Actor.from_state(
+            int(np.asarray(d.get("seed", 1))),
+            int(np.asarray(d.get("z_max", 0))),
+            int(np.asarray(d.get("gather_span", 2))),
+            bool(np.asarray(d.get("tanh_last", False)).item()),
+            float(np.asarray(d.get("lr", 1e-2))),
+            float(np.asarray(d.get("lr_min_frac", 0.02))),
+            bool(np.asarray(d.get("restore_best", True)).item()),
+            int(np.asarray(d["code"])),
+            int(np.asarray(d["act_dim"])),
+            _f32(np.ravel(d["weights"])),
+        ))
 
 
 class VectorModel:

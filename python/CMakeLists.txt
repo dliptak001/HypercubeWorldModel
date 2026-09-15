@@ -40,6 +40,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/WorldModel/WorldModel.cpp
     ${CORE_DIR}/Normaliser/Normaliser.cpp
     ${CORE_DIR}/Head/Head.cpp
+    ${CORE_DIR}/Actor/Actor.cpp
     ${CORE_DIR}/VectorModel/VectorModel.cpp
     ${CORE_DIR}/VectorModel/Metrics.cpp
 )
@@ -72,6 +73,7 @@ target_include_directories(_core PRIVATE
     ${CORE_DIR}/WorldModel
     ${CORE_DIR}/Normaliser
     ${CORE_DIR}/Head
+    ${CORE_DIR}/Actor
     ${CORE_DIR}/VectorModel)
 target_compile_definitions(_core PRIVATE
     "HYPERCUBE_WORLDMODEL_VERSION=\"${HYPERCUBE_WORLDMODEL_VERSION}\"")

@@ -705,3 +705,54 @@ def test_lin_r2_rank_deficient():
     split = 220
     got = hw.lin_r2(z[:split], y[:split], z[split:], y[split:])
     assert float(got["min"]) > 0.999
+
+
+def test_actor_vector_readout():
+    assert hw.Actor is not None
+    rng = np.random.default_rng(3)
+    z = rng.uniform(-1, 1, (120, 16)).astype(np.float32)
+    a = np.stack([z[:, 0], 0.5 * z[:, 1]], axis=1).astype(np.float32)
+    pi = hw.Actor().fit(z, a, epochs=50, batch_size=16)
+    assert pi.act_dim == 2
+    assert pi.predict(z).shape == (120, 2)
+    assert pi.predict(z[0]).shape == (2,)
+    assert pi.score(z, a)["r2"] > 0.6
+    np.testing.assert_array_equal(pi.predict(z), pi(z))
+    again = hw.Actor.from_state(pi.state())
+    np.testing.assert_allclose(again(z), pi(z), atol=1e-5)
+    with pytest.raises(ValueError):
+        hw.Actor().fit(z, np.zeros((120, 17), np.float32), epochs=1)
+
+    one = np.zeros(2, np.float32)
+    assert pi.predict(z[0], out=one) is one
+    np.testing.assert_allclose(one, pi.predict(z[0]))
+    row = np.zeros((1, 2), np.float32)
+    assert pi.predict(z[0], out=row) is row
+    np.testing.assert_allclose(row[0], pi.predict(z[0]))
+    many = np.zeros((120, 2), np.float32)
+    assert pi.predict(z, out=many) is many
+    np.testing.assert_allclose(many, pi.predict(z))
+
+    before = pi(z[0]).copy()
+    z_bad = np.zeros((120, 17), np.float32)
+    z_bad[:, :16] = z
+    with pytest.raises(ValueError):
+        pi.fit(z_bad, a, epochs=1)
+    assert pi.code_size == 16
+    assert pi.act_dim == 2
+    np.testing.assert_allclose(pi(z[0]), before)
+
+    with pytest.raises(ValueError):
+        hw.Actor().predict(z)
+    with pytest.raises(ValueError):
+        hw.Actor().score(z, a)
+    with pytest.raises(ValueError):
+        pi.predict(np.zeros((4, 32), np.float32))
+    with pytest.raises(ValueError):
+        pi.score(z, a.T)
+
+    a1 = z[:, :1]
+    p1 = hw.Actor().fit(z, a1, epochs=8, batch_size=16)
+    assert p1.act_dim == 1
+    assert p1.predict(z[0]).shape == (1,)
+    assert p1.predict(z).shape == (120, 1)

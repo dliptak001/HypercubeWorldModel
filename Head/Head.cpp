@@ -144,8 +144,11 @@ float Head::ForwardOne(const float* z, const float* za) const
 void Head::Pack(const float* z, const float* za, std::span<float> field) const
 {
     std::copy(z, z + code_, field.begin());
-    if (uses_za_)
-        std::copy(za, za + code_, field.begin() + static_cast<std::ptrdiff_t>(code_));
+    if (!uses_za_)
+        return;
+    if (!za)
+        throw std::invalid_argument("Head::Pack requires za");
+    std::copy(za, za + code_, field.begin() + static_cast<std::ptrdiff_t>(code_));
 }
 
 float Head::Readout() const

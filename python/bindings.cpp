@@ -23,6 +23,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Actor.h"
 #include "Decoder.h"
 #include "Head.h"
 #include "Metrics.h"
@@ -889,6 +890,134 @@ PYBIND11_MODULE(_core, m)
             return self.GetConfig().restore_best;
         })
         .def("weights", [](const Head& self) { return VectorToArray(self.Net().Weights()); });
+
+    // ── Actor ──
+
+    py::class_<Actor>(m, "_Actor")
+        .def(py::init([](uint64_t seed, size_t z_max, size_t gather_span, bool tanh_last,
+                         float lr, float lr_min_frac, int lr_decay_epochs, bool restore_best) {
+            Actor::Config cfg;
+            cfg.seed = seed;
+            cfg.z_max = z_max;
+            cfg.gather_span = gather_span;
+            cfg.tanh_last = tanh_last;
+            cfg.lr = lr;
+            cfg.lr_min_frac = lr_min_frac;
+            cfg.lr_decay_epochs = lr_decay_epochs;
+            cfg.restore_best = restore_best;
+            return Actor(cfg);
+        }), py::arg("seed") = 1, py::arg("z_max") = 0, py::arg("gather_span") = 2,
+            py::arg("tanh_last") = false, py::arg("lr") = 1e-2f, py::arg("lr_min_frac") = 0.02f,
+            py::arg("lr_decay_epochs") = 0, py::arg("restore_best") = true)
+        .def("fit", [](Actor& self, FloatArray z, FloatArray a, int epochs, size_t batch) {
+            const auto zb = z.request(), ab = a.request();
+            if (zb.ndim != 2)
+                throw std::invalid_argument("Actor.fit z must be 2-D (count, code)");
+            if (ab.ndim != 2)
+                throw std::invalid_argument("Actor.fit a must be 2-D (count, act_dim)");
+            const size_t count = static_cast<size_t>(zb.shape[0]);
+            const size_t code = static_cast<size_t>(zb.shape[1]);
+            const size_t act = static_cast<size_t>(ab.shape[1]);
+            if (static_cast<size_t>(ab.shape[0]) != count)
+                throw std::invalid_argument("Actor.fit a rows must match z rows");
+            py::gil_scoped_release release;
+            self.Fit(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
+                     code,
+                     std::span<const float>(static_cast<const float*>(ab.ptr), count * act),
+                     act, epochs, batch);
+        }, py::arg("z"), py::arg("a"), py::arg("epochs") = 40, py::arg("batch") = 32)
+        .def("predict", [](const Actor& self, FloatArray z, std::optional<py::array> out_opt) {
+            if (!self.Fitted())
+                throw std::invalid_argument("Actor.predict requires Fit");
+            const auto zb = z.request();
+            if (zb.ndim != 2)
+                throw std::invalid_argument("Actor.predict z must be 2-D (count, code)");
+            const size_t count = static_cast<size_t>(zb.shape[0]);
+            const size_t code = static_cast<size_t>(zb.shape[1]);
+            if (code != self.CodeSize())
+                throw std::invalid_argument(
+                    "Actor.predict z last dimension must be "
+                    + std::to_string(self.CodeSize()) + ", got " + std::to_string(code));
+            const size_t act = self.ActDim();
+            OutBuf out = ResolveOut(out_opt,
+                {static_cast<py::ssize_t>(count), static_cast<py::ssize_t>(act)},
+                "predict out");
+            {
+                py::gil_scoped_release release;
+                self.Predict(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
+                             std::span<float>(out.ptr, count * act));
+            }
+            return out.arr;
+        }, py::arg("z"), py::arg("out").noconvert() = py::none())
+        .def("score", [](const Actor& self, FloatArray z, FloatArray a) {
+            if (!self.Fitted())
+                throw std::invalid_argument("Actor.score requires Fit");
+            const auto zb = z.request(), ab = a.request();
+            if (zb.ndim != 2)
+                throw std::invalid_argument("Actor.score z must be 2-D (count, code)");
+            if (ab.ndim != 2)
+                throw std::invalid_argument("Actor.score a must be 2-D (count, act_dim)");
+            const size_t count = static_cast<size_t>(zb.shape[0]);
+            const size_t code = static_cast<size_t>(zb.shape[1]);
+            const size_t act = static_cast<size_t>(ab.shape[1]);
+            if (code != self.CodeSize())
+                throw std::invalid_argument(
+                    "Actor.score z last dimension must be "
+                    + std::to_string(self.CodeSize()) + ", got " + std::to_string(code));
+            if (static_cast<size_t>(ab.shape[0]) != count)
+                throw std::invalid_argument("Actor.score a rows must match z rows");
+            if (act != self.ActDim())
+                throw std::invalid_argument(
+                    "Actor.score a last dimension must be "
+                    + std::to_string(self.ActDim()) + ", got " + std::to_string(act));
+            Actor::Score s;
+            {
+                py::gil_scoped_release release;
+                s = self.ScoreOn(
+                    std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
+                    std::span<const float>(static_cast<const float*>(ab.ptr), count * act));
+            }
+            py::dict d;
+            d["r2"] = s.r2;
+            return d;
+        }, py::arg("z"), py::arg("a"))
+        .def_static("from_state", [](uint64_t seed, size_t z_max, size_t gather_span,
+                                     bool tanh_last, float lr, float lr_min_frac,
+                                     bool restore_best, size_t code, size_t act_dim,
+                                     FloatArray weights) {
+            Actor::Config cfg;
+            cfg.seed = seed;
+            cfg.z_max = z_max;
+            cfg.gather_span = gather_span;
+            cfg.tanh_last = tanh_last;
+            cfg.lr = lr;
+            cfg.lr_min_frac = lr_min_frac;
+            cfg.restore_best = restore_best;
+            const auto wb = weights.request();
+            return Actor::FromState(
+                cfg, code, act_dim,
+                std::span<const float>(static_cast<const float*>(wb.ptr),
+                                       static_cast<size_t>(wb.size)));
+        })
+        .def_property_readonly("fitted", &Actor::Fitted)
+        .def_property_readonly("code_size", &Actor::CodeSize)
+        .def_property_readonly("act_dim", &Actor::ActDim)
+        .def_property_readonly("z_max", [](const Actor& self) { return self.GetConfig().z_max; })
+        .def_property_readonly("gather_span", [](const Actor& self) {
+            return self.GetConfig().gather_span;
+        })
+        .def_property_readonly("seed", [](const Actor& self) { return self.GetConfig().seed; })
+        .def_property_readonly("tanh_last", [](const Actor& self) {
+            return self.GetConfig().tanh_last;
+        })
+        .def_property_readonly("lr", [](const Actor& self) { return self.GetConfig().lr; })
+        .def_property_readonly("lr_min_frac", [](const Actor& self) {
+            return self.GetConfig().lr_min_frac;
+        })
+        .def_property_readonly("restore_best", [](const Actor& self) {
+            return self.GetConfig().restore_best;
+        })
+        .def("weights", [](const Actor& self) { return VectorToArray(self.Net().Weights()); });
 
     // ── VectorModel ──
 
