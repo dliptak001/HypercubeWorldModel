@@ -756,3 +756,109 @@ def test_actor_vector_readout():
     assert p1.act_dim == 1
     assert p1.predict(z[0]).shape == (1,)
     assert p1.predict(z).shape == (120, 1)
+
+
+def _fit_data(seed):
+    rng = np.random.default_rng(seed)
+    z = rng.uniform(-1, 1, (96, 16)).astype(np.float32)
+    za = rng.uniform(-1, 1, (96, 16)).astype(np.float32)
+    y = (z[:, 0] + 0.5 * za[:, 1]).astype(np.float32)
+    a = np.stack([z[:, 0], 0.5 * z[:, 1]], axis=1).astype(np.float32)
+    return z, za, y, a
+
+
+def _weights(m):
+    return np.asarray(m.state()["weights"], np.float32)
+
+
+def test_head_fit_verbose_and_val(capsys):
+    z, za, y, _a = _fit_data(11)
+    tr, va = slice(0, 64), slice(64, 96)
+
+    quiet = hw.Head(sign="cost").fit(z[tr], y[tr], epochs=5, batch_size=16)
+    assert capsys.readouterr().out == ""
+
+    # verbose prints one line per epoch and does not change the fit
+    loud = hw.Head(sign="cost").fit(z[tr], y[tr], epochs=5, batch_size=16,
+                                    verbose=True, prefix="V ")
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 5
+    assert lines[0].startswith("V epoch=0/5 train_loss=")
+    assert lines[-1].startswith("V epoch=4/5 train_loss=")
+    assert all(" val=" not in ln for ln in lines)
+    np.testing.assert_array_equal(_weights(quiet), _weights(loud))
+
+    # val adds the held-out column; with za on both sides
+    hw.Head(sign="cost").fit(z[tr], y[tr], za=za[tr], epochs=3, batch_size=16,
+                             val=(z[va], y[va], za[va]), verbose=True)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 3
+    assert all(" val=" in ln for ln in lines)
+    vals = [float(ln.split(" val=")[1]) for ln in lines]
+    assert all(np.isfinite(v) and v >= 0 for v in vals)
+
+    # val is on the training loss's scale: 0.5 * squared error, mean per row.
+    # restore_best off so the final weights are the last epoch's.
+    h = hw.Head(sign="cost", restore_best=False).fit(
+        z[tr], y[tr], epochs=4, batch_size=16, val=(z[va], y[va]), verbose=True)
+    last = float(capsys.readouterr().out.splitlines()[-1].split(" val=")[1])
+    want = float(np.mean(0.5 * (h.predict(z[va]) - y[va]) ** 2))
+    assert last == pytest.approx(want, rel=1e-4, abs=1e-7)
+
+    # val without verbose is silent and still fits
+    hw.Head(sign="cost").fit(z[tr], y[tr], epochs=2, batch_size=16, val=(z[va], y[va]))
+    assert capsys.readouterr().out == ""
+
+    with pytest.raises(ValueError):   # za on one side only
+        hw.Head().fit(z[tr], y[tr], za=za[tr], epochs=1, val=(z[va], y[va]))
+    with pytest.raises(ValueError):
+        hw.Head().fit(z[tr], y[tr], epochs=1, val=(z[va], y[va], za[va]))
+    with pytest.raises(ValueError):   # row mismatch
+        hw.Head().fit(z[tr], y[tr], epochs=1, val=(z[va], y[:5]))
+    with pytest.raises(ValueError):   # wrong arity
+        hw.Head().fit(z[tr], y[tr], epochs=1, val=(z[va],))
+
+
+def test_actor_fit_verbose_and_val(capsys):
+    z, _za, _y, a = _fit_data(12)
+    tr, va = slice(0, 64), slice(64, 96)
+
+    quiet = hw.Actor().fit(z[tr], a[tr], epochs=5, batch_size=16)
+    assert capsys.readouterr().out == ""
+    loud = hw.Actor().fit(z[tr], a[tr], epochs=5, batch_size=16, verbose=True, prefix="pi ")
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 5
+    assert lines[0].startswith("pi epoch=0/5 train_loss=")
+    np.testing.assert_array_equal(_weights(quiet), _weights(loud))
+
+    pi = hw.Actor(restore_best=False).fit(z[tr], a[tr], epochs=4, batch_size=16,
+                                          val=(z[va], a[va]), verbose=True)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 4 and all(" val=" in ln for ln in lines)
+    last = float(lines[-1].split(" val=")[1])
+    want = float(np.mean(0.5 * ((pi.predict(z[va]) - a[va]) ** 2).sum(axis=1)))
+    assert last == pytest.approx(want, rel=1e-4, abs=1e-7)
+
+    with pytest.raises(ValueError):   # act_dim mismatch
+        hw.Actor().fit(z[tr], a[tr], epochs=1, val=(z[va], a[va][:, :1]))
+    with pytest.raises(ValueError):
+        hw.Actor().fit(z[tr], a[tr], epochs=1, val=(z[va],))
+
+
+def test_fit_val_drives_restore_best():
+    # With val, the kept weights are the best-val epoch's, so a fit whose
+    # val set disagrees with train keeps an early epoch and differs from
+    # the no-val fit.
+    z, _za, y, a = _fit_data(13)
+    tr, va = slice(0, 64), slice(64, 96)
+    rng = np.random.default_rng(99)
+    y_bad = rng.uniform(-1, 1, 32).astype(np.float32)
+    a_bad = rng.uniform(-1, 1, (32, 2)).astype(np.float32)
+
+    h0 = hw.Head().fit(z[tr], y[tr], epochs=12, batch_size=16)
+    h1 = hw.Head().fit(z[tr], y[tr], epochs=12, batch_size=16, val=(z[va], y_bad))
+    assert not np.array_equal(_weights(h0), _weights(h1))
+
+    p0 = hw.Actor().fit(z[tr], a[tr], epochs=12, batch_size=16)
+    p1 = hw.Actor().fit(z[tr], a[tr], epochs=12, batch_size=16, val=(z[va], a_bad))
+    assert not np.array_equal(_weights(p0), _weights(p1))

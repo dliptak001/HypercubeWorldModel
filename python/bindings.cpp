@@ -13,8 +13,10 @@
 #include <optional>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <span>
@@ -42,6 +44,33 @@ static_assert(std::string_view(HYPERCUBE_WORLDMODEL_VERSION) == std::string_view
               "python/hypercube_worldmodel/_version.py and WorldModel::kVersion disagree");
 
 namespace {
+
+// Per-epoch line for Head.fit / Actor.fit with verbose=True. The format is
+// the one hypercube_worldmodel._fit_loop prints for the Predictor. Fit runs
+// with the GIL released, so the callback takes it back for the print. The
+// signal check lets Ctrl-C stop a verbose fit between epochs. An empty
+// function (verbose off) costs Fit nothing.
+std::function<void(int, int, float, std::optional<float>)> EpochPrinter(bool verbose,
+                                                                        std::string prefix)
+{
+    if (!verbose)
+        return {};
+    return [prefix = std::move(prefix)](int epoch, int epochs, float train_loss,
+                                        std::optional<float> val_loss) {
+        char buf[96];
+        if (val_loss)
+            std::snprintf(buf, sizeof buf, "epoch=%d/%d train_loss=%.8f val=%.8f",
+                          epoch, epochs, static_cast<double>(train_loss),
+                          static_cast<double>(*val_loss));
+        else
+            std::snprintf(buf, sizeof buf, "epoch=%d/%d train_loss=%.8f",
+                          epoch, epochs, static_cast<double>(train_loss));
+        py::gil_scoped_acquire gil;
+        py::print(prefix + buf, py::arg("flush") = true);
+        if (PyErr_CheckSignals() != 0)
+            throw py::error_already_set();
+    };
+}
 
 // A 1-D or 2-D float32 array seen as rows of a fixed width.
 struct Rows
@@ -752,7 +781,9 @@ PYBIND11_MODULE(_core, m)
             py::arg("lr") = 1e-2f, py::arg("lr_min_frac") = 0.02f,
             py::arg("lr_decay_epochs") = 0, py::arg("restore_best") = true)
         .def("fit", [](Head& self, FloatArray z, FloatArray y, std::optional<FloatArray> za,
-                       int epochs, size_t batch) {
+                       int epochs, size_t batch,
+                       std::optional<FloatArray> val_z, std::optional<FloatArray> val_y,
+                       std::optional<FloatArray> val_za, bool verbose, std::string prefix) {
             const auto zb = z.request(), yb = y.request();
             if (zb.ndim != 2)
                 throw std::invalid_argument("Head.fit z must be 2-D (count, code)");
@@ -771,13 +802,43 @@ PYBIND11_MODULE(_core, m)
                     throw std::invalid_argument("Head.fit za must match z");
                 za_span = std::span<const float>(static_cast<const float*>(ab.ptr), count * code);
             }
+            Head::FitOptions opt;
+            if (val_z.has_value() != val_y.has_value())
+                throw std::invalid_argument("Head.fit val needs both val_z and val_y");
+            if (val_za && !val_y)
+                throw std::invalid_argument("Head.fit val_za needs val_z and val_y");
+            if (val_y)
+            {
+                const auto vzb = val_z->request(), vyb = val_y->request();
+                if (vzb.ndim != 2 || static_cast<size_t>(vzb.shape[1]) != code)
+                    throw std::invalid_argument("Head.fit val z must be 2-D (count, code)");
+                const size_t vcount = static_cast<size_t>(vzb.shape[0]);
+                if (vcount == 0)
+                    throw std::invalid_argument("Head.fit val must not be empty");
+                if (vyb.ndim != 1 || static_cast<size_t>(vyb.shape[0]) != vcount)
+                    throw std::invalid_argument("Head.fit val y length must match val z rows");
+                opt.val_z = std::span<const float>(static_cast<const float*>(vzb.ptr), vcount * code);
+                opt.val_y = std::span<const float>(static_cast<const float*>(vyb.ptr), vcount);
+                if (val_za)
+                {
+                    const auto vab = val_za->request();
+                    if (vab.ndim != 2 || static_cast<size_t>(vab.shape[0]) != vcount ||
+                        static_cast<size_t>(vab.shape[1]) != code)
+                        throw std::invalid_argument("Head.fit val za must match val z");
+                    opt.val_za = std::span<const float>(static_cast<const float*>(vab.ptr), vcount * code);
+                }
+            }
+            opt.on_epoch = EpochPrinter(verbose, std::move(prefix));
             py::gil_scoped_release release;
             self.Fit(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
                      code,
                      std::span<const float>(static_cast<const float*>(yb.ptr), count),
-                     epochs, batch, za_span);
+                     epochs, batch, za_span, opt);
         }, py::arg("z"), py::arg("y"), py::arg("za") = py::none(),
-            py::arg("epochs") = 40, py::arg("batch") = 32)
+            py::arg("epochs") = 40, py::arg("batch") = 32,
+            py::arg("val_z") = py::none(), py::arg("val_y") = py::none(),
+            py::arg("val_za") = py::none(), py::arg("verbose") = false,
+            py::arg("prefix") = "")
         .def("predict", [](const Head& self, FloatArray z, std::optional<FloatArray> za,
                            std::optional<py::array> out_opt) {
             const auto zb = z.request();
@@ -909,7 +970,9 @@ PYBIND11_MODULE(_core, m)
         }), py::arg("seed") = 1, py::arg("z_max") = 0, py::arg("gather_span") = 2,
             py::arg("tanh_last") = false, py::arg("lr") = 1e-2f, py::arg("lr_min_frac") = 0.02f,
             py::arg("lr_decay_epochs") = 0, py::arg("restore_best") = true)
-        .def("fit", [](Actor& self, FloatArray z, FloatArray a, int epochs, size_t batch) {
+        .def("fit", [](Actor& self, FloatArray z, FloatArray a, int epochs, size_t batch,
+                       std::optional<FloatArray> val_z, std::optional<FloatArray> val_a,
+                       bool verbose, std::string prefix) {
             const auto zb = z.request(), ab = a.request();
             if (zb.ndim != 2)
                 throw std::invalid_argument("Actor.fit z must be 2-D (count, code)");
@@ -920,12 +983,32 @@ PYBIND11_MODULE(_core, m)
             const size_t act = static_cast<size_t>(ab.shape[1]);
             if (static_cast<size_t>(ab.shape[0]) != count)
                 throw std::invalid_argument("Actor.fit a rows must match z rows");
+            Actor::FitOptions opt;
+            if (val_z.has_value() != val_a.has_value())
+                throw std::invalid_argument("Actor.fit val needs both val_z and val_a");
+            if (val_a)
+            {
+                const auto vzb = val_z->request(), vab = val_a->request();
+                if (vzb.ndim != 2 || static_cast<size_t>(vzb.shape[1]) != code)
+                    throw std::invalid_argument("Actor.fit val z must be 2-D (count, code)");
+                const size_t vcount = static_cast<size_t>(vzb.shape[0]);
+                if (vcount == 0)
+                    throw std::invalid_argument("Actor.fit val must not be empty");
+                if (vab.ndim != 2 || static_cast<size_t>(vab.shape[0]) != vcount ||
+                    static_cast<size_t>(vab.shape[1]) != act)
+                    throw std::invalid_argument("Actor.fit val a must be (val count, act_dim)");
+                opt.val_z = std::span<const float>(static_cast<const float*>(vzb.ptr), vcount * code);
+                opt.val_a = std::span<const float>(static_cast<const float*>(vab.ptr), vcount * act);
+            }
+            opt.on_epoch = EpochPrinter(verbose, std::move(prefix));
             py::gil_scoped_release release;
             self.Fit(std::span<const float>(static_cast<const float*>(zb.ptr), count * code),
                      code,
                      std::span<const float>(static_cast<const float*>(ab.ptr), count * act),
-                     act, epochs, batch);
-        }, py::arg("z"), py::arg("a"), py::arg("epochs") = 40, py::arg("batch") = 32)
+                     act, epochs, batch, opt);
+        }, py::arg("z"), py::arg("a"), py::arg("epochs") = 40, py::arg("batch") = 32,
+            py::arg("val_z") = py::none(), py::arg("val_a") = py::none(),
+            py::arg("verbose") = false, py::arg("prefix") = "")
         .def("predict", [](const Actor& self, FloatArray z, std::optional<py::array> out_opt) {
             if (!self.Fitted())
                 throw std::invalid_argument("Actor.predict requires Fit");

@@ -8,6 +8,7 @@
 #include <bit>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <utility>
@@ -114,6 +115,13 @@ void Actor::Fit(std::span<const float> z, size_t code_size,
                 std::span<const float> a, size_t act_dim,
                 int epochs, size_t batch)
 {
+    Fit(z, code_size, a, act_dim, epochs, batch, FitOptions{});
+}
+
+void Actor::Fit(std::span<const float> z, size_t code_size,
+                std::span<const float> a, size_t act_dim,
+                int epochs, size_t batch, const FitOptions& opt)
+{
     if (code_size == 0)
         throw std::invalid_argument("Actor::Fit code_size must be > 0");
     if (act_dim == 0 || act_dim > code_size)
@@ -129,6 +137,13 @@ void Actor::Fit(std::span<const float> z, size_t code_size,
         throw std::invalid_argument("Actor::Fit epochs must be > 0");
     if (batch == 0)
         throw std::invalid_argument("Actor::Fit batch must be > 0");
+    if (opt.val_a.size() % act_dim != 0)
+        throw std::invalid_argument("Actor::Fit val_a length must be val count * act_dim");
+    const size_t val_count = opt.val_a.size() / act_dim;
+    if (val_count == 0 && !opt.val_z.empty())
+        throw std::invalid_argument("Actor::Fit val needs val_a");
+    if (val_count && opt.val_z.size() != val_count * code_size)
+        throw std::invalid_argument("Actor::Fit val_z length must be val count * code_size");
 
     const size_t dim = CubeDim(code_size);
     auto net = LCN::Create(LCNConfig{.dim = dim,
@@ -174,8 +189,36 @@ void Actor::Fit(std::span<const float> z, size_t code_size,
             }
             train.Adam();
         }
-        if (nloss)
-            train.Observe(static_cast<float>(epoch_loss / nloss), epoch);
+        const float train_loss =
+            nloss ? static_cast<float>(epoch_loss / nloss) : 0.f;
+        std::optional<float> val_loss;
+        if (val_count)
+        {
+            // Forward only. The next training step runs its own Forward
+            // before Loss, so this leaves no stale state behind.
+            double sum = 0.0;
+            for (size_t i = 0; i < val_count; ++i)
+            {
+                std::copy(opt.val_z.data() + i * code_size,
+                          opt.val_z.data() + (i + 1) * code_size, field.begin());
+                net->Forward(field);
+                const auto& out = net->Output();
+                for (size_t v = 0; v < act_dim; ++v)
+                {
+                    const double d = static_cast<double>(out[v]) -
+                                     static_cast<double>(opt.val_a[i * act_dim + v]);
+                    sum += 0.5 * d * d;
+                }
+            }
+            val_loss = static_cast<float>(sum / static_cast<double>(val_count));
+        }
+        if (val_count)
+            train.Observe(*val_loss, epoch);
+        else if (nloss)
+            train.Observe(train_loss, epoch);
+        // net is a local until the end, so a throw here leaves *this as it was.
+        if (opt.on_epoch)
+            opt.on_epoch(epoch, epochs, train_loss, val_loss);
     }
     train.RestoreBest();
     net_ = std::move(net);

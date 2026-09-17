@@ -1,6 +1,8 @@
 # HypercubeWorldModel - Change Log
 
 ## Unreleased
+- Head.fit and Actor.fit take val, verbose, and prefix. verbose prints one line per epoch in the Predictor's format from inside the C++ loop (the callback retakes the GIL to print and checks for Ctrl-C) and leaves the weights bit-identical to a quiet fit. val is (z, y) or (z, y, za) for Head and (z, a) for Actor: scored forward-only each epoch on the training loss's scale, and restore_best follows it when given. C++: Head::FitOptions and Actor::FitOptions (held-out spans and on_epoch) on a new Fit overload; the existing Fit signatures are unchanged. val_loss reaches the callback as std::optional, not NaN: the build is fast-math and a NaN test is compiled away. Head::Fit leaves the Head unfitted if on_epoch throws.
+- Docs: seeds are not portable across compilers. std::shuffle and the random distributions are implementation-defined, so an MSVC build and a MinGW build give different weights for the same seed. Saved models are unaffected; refits do not reproduce.
 - Python fit verbose print: train_loss and val to 8 decimals.
 - linR2 is least squares, not SGD. LinearR2On / hw.lin_r2 fit ŷ = Wz + b by column-pivoted QR (stdlib, no regulariser). Rank-deficient codes (action RankMe ≪ z_dim) are solved on the column span.
 - Head constructor takes lr_decay_epochs (was Config-only, always 0 from Python).

@@ -7,7 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -53,6 +55,29 @@ public:
         bool has_auc = false;
     };
 
+    /// Optional extras for @ref Fit. The default changes nothing.
+    ///
+    /// Held-out rows: @p val_y non-empty turns them on. @p val_z is
+    /// val_y.size() x code_size; @p val_za is present iff Fit's za is.
+    /// Each epoch ends with a forward-only pass over them. The metric is
+    /// on the training loss's scale, 0.5 * squared error, mean per row.
+    /// With held-out rows, restore_best follows that metric instead of
+    /// the training loss, so the fitted weights can differ from a fit
+    /// without them.
+    ///
+    /// @p on_epoch runs once per epoch after the metrics are known:
+    /// (epoch, epochs, train_loss, val_loss), val_loss empty without
+    /// held-out rows (an optional, not NaN: the build is fast-math, where
+    /// a NaN test is not reliable). It does not touch training. If it throws, Fit
+    /// rethrows and the Head is left unfitted.
+    struct FitOptions
+    {
+        std::span<const float> val_z{};
+        std::span<const float> val_y{};
+        std::span<const float> val_za{};
+        std::function<void(int, int, float, std::optional<float>)> on_epoch{};
+    };
+
     Head();
     explicit Head(Config cfg);
     explicit Head(Sign sign);
@@ -70,6 +95,12 @@ public:
     ///         code size the LCN will not take.
     void Fit(std::span<const float> z, size_t code_size, std::span<const float> y,
              int epochs = 40, size_t batch = 32, std::span<const float> za = {});
+
+    /// @brief Fit with @ref FitOptions: held-out rows and a per-epoch
+    /// callback. With default options this is the Fit above.
+    void Fit(std::span<const float> z, size_t code_size, std::span<const float> y,
+             int epochs, size_t batch, std::span<const float> za,
+             const FitOptions& opt);
 
     /// @brief Predict a scalar per code. @p z is one code or many
     /// concatenated; @p dst has one value per row. @p za must be present

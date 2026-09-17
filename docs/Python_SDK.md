@@ -22,6 +22,10 @@
 | action_space | Bounds: .low and .high on VectorModel. Not a gymnasium Box. The WorldModel never sees bounds. |
 | Normaliser | Per-dimension affine + clip into [-1, 1]. Optional on VectorModel. |
 | Head | LCN from a code to a host y. sign cost or reward. |
+| Actor | LCN from a code to an action vector. Readout is vertices 0 .. act_dim-1. |
+| val | Held-out rows given to a fit. Scored each epoch, never trained on. With val, restore_best follows the val metric. |
+| train_loss, val | The two numbers on a verbose fit line. Head and Actor: 0.5 × squared error (summed over action dims for Actor), mean per row. |
+| prefix | Text put in front of each verbose line of a Head or Actor fit. |
 | min_dim, min_k | Capacity floors: max(6, ceil(log2(obs_dim))) and max(5, ceil(log2(act_dim))). |
 
 HypercubeWorldModel is a **world model with frozen encoders** on a
@@ -116,6 +120,16 @@ $env:CC = "C:\path\to\mingw\bin\gcc.exe"
 $env:CXX = "C:\path\to\mingw\bin\g++.exe"
 pip install . --no-build-isolation
 ```
+
+**Seeds are not portable across compilers.** Weight draws and epoch
+shuffles go through the C++ standard library (`std::shuffle` and the
+random distributions), whose results are implementation-defined. An MSVC
+build and a MinGW or GCC build give different weights for the same seed
+and the same data. Saved models load and predict the same under either.
+Refits do not reproduce. Rebuild with the compiler the existing results
+came from; `objdump -p _core*.pyd` shows `MSVCP140.dll` for an MSVC build
+and `libwinpthread-1.dll` for MinGW. A plain `pip install .` on a Windows
+machine with Visual Studio installed builds with MSVC.
 
 ### Running tests
 
@@ -427,6 +441,9 @@ VectorModel always paints with paint_stripes. CEM is not in the package.
 n = hw.Normaliser.fit(x, clip=3.0)          # x: (count, d) -> values in [-1, 1]
 h = hw.Head(sign="cost")                    # LCN on the code cube
 h.fit(z, y, epochs=40, batch_size=32)       # za omitted is the default
+h.fit(z, y, epochs=40, val=(zv, yv),        # held-out rows; (zv, yv, zav) when za is used
+      verbose=True, prefix="V ")            # V epoch=0/40 train_loss=... val=...
+pi = hw.Actor().fit(z, a, epochs=40, val=(zv, av), verbose=True, prefix="pi ")
 yhat = h.predict(z)                         # one scalar per code; h(z) is the same
 s = h.score(z, y)                           # dict: r2; auc only if y is strictly 0/1
 c = h.plan_cost(zs)                         # (B,) sum excluding z0, signed
@@ -450,6 +467,17 @@ again = hw.VectorModel.load("model.hvm")    # HVM1; a bare HWM1 loads as wm-only
 hw.min_dim(obs_dim)                         # max(6, ceil(log2(obs_dim))); floor, not a config
 hw.min_k(act_dim)                           # max(5, ceil(log2(act_dim)))
 ```
+
+Head.fit and Actor.fit run their epochs in C++ with the GIL released.
+`verbose=True` prints one line per epoch in the Predictor's format and
+does not change the fit: the weights match a quiet fit bit for bit. A
+verbose fit also answers Ctrl-C between epochs. `prefix` tells fits
+apart when several run at once on different threads. `val` is scored
+forward-only after each epoch, on the training loss's scale. With `val`,
+`restore_best` keeps the weights of the best val epoch instead of the
+best training-loss epoch, so the result can differ from a fit without
+it. Each Head.fit and Actor.fit starts from a fresh net drawn from
+`seed`; it does not continue the previous fit.
 
 obs_norm, act_norm, and heads are **copies**. Mutating a copy does not
 change the VectorModel; call set_head (or reconstruct) to put a fitted

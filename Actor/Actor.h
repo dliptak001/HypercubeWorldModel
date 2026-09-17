@@ -7,7 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -44,6 +46,28 @@ public:
         float r2 = 0.f;
     };
 
+    /// Optional extras for @ref Fit. The default changes nothing.
+    ///
+    /// Held-out rows: @p val_a non-empty turns them on. @p val_z is
+    /// (val count) x code_size and @p val_a is (val count) x act_dim.
+    /// Each epoch ends with a forward-only pass over them. The metric is
+    /// on the training loss's scale, 0.5 * squared error summed over the
+    /// action dims, mean per row. With held-out rows, restore_best
+    /// follows that metric instead of the training loss, so the fitted
+    /// weights can differ from a fit without them.
+    ///
+    /// @p on_epoch runs once per epoch after the metrics are known:
+    /// (epoch, epochs, train_loss, val_loss), val_loss empty without
+    /// held-out rows (an optional, not NaN: the build is fast-math, where
+    /// a NaN test is not reliable). It does not touch training. If it throws, Fit
+    /// rethrows and the Actor is unchanged.
+    struct FitOptions
+    {
+        std::span<const float> val_z{};
+        std::span<const float> val_a{};
+        std::function<void(int, int, float, std::optional<float>)> on_epoch{};
+    };
+
     Actor();
     explicit Actor(Config cfg);
 
@@ -58,6 +82,12 @@ public:
     void Fit(std::span<const float> z, size_t code_size,
              std::span<const float> a, size_t act_dim,
              int epochs = 40, size_t batch = 32);
+
+    /// @brief Fit with @ref FitOptions: held-out rows and a per-epoch
+    /// callback. With default options this is the Fit above.
+    void Fit(std::span<const float> z, size_t code_size,
+             std::span<const float> a, size_t act_dim,
+             int epochs, size_t batch, const FitOptions& opt);
 
     /// @brief Predict one action per code. @p z is count × code_size;
     /// @p dst is count × act_dim.

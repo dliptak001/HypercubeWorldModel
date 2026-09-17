@@ -1189,8 +1189,28 @@ class Head:
     def code_size(self) -> int:
         return int(self._core.code_size)
 
-    def fit(self, z, y, za=None, *, epochs: int = 40, batch_size: int = 32) -> "Head":
-        """Fit on codes ``z`` against scalar ``y``. ``za`` omitted is the default."""
+    def fit(self, z, y, za=None, *, epochs: int = 40, batch_size: int = 32,
+            val=None, verbose: bool = False, prefix: str = "") -> "Head":
+        """Fit on codes ``z`` against scalar ``y``. ``za`` omitted is the default.
+
+        Parameters
+        ----------
+        val : tuple, optional
+            Held-out rows, ``(z, y)`` or ``(z, y, za)``; ``za`` is given
+            exactly when the fit's ``za`` is. Scored forward-only at the
+            end of each epoch, on the training loss's scale: 0.5 * squared
+            error, mean per row. With ``val``, ``restore_best`` follows
+            that metric instead of the training loss, so the fitted
+            weights can differ from a fit without it.
+        verbose : bool
+            Print one line per epoch, in the Predictor's format:
+            ``epoch=3/40 train_loss=0.01234567`` and `` val=...`` when
+            ``val`` is given. Printing does not change the fit. A verbose
+            fit also answers Ctrl-C between epochs.
+        prefix : str
+            Put in front of each verbose line, as given. Tells fits apart
+            when several run at once on different threads.
+        """
         z = _f32(z)
         if z.ndim == 1:
             z = z.reshape(1, -1)
@@ -1198,7 +1218,22 @@ class Head:
         za_a = None if za is None else _f32(za)
         if za_a is not None and za_a.ndim == 1:
             za_a = za_a.reshape(1, -1)
-        self._core.fit(z, y, za_a, int(epochs), int(batch_size))
+        vz = vy = vza = None
+        if val is not None:
+            if len(val) not in (2, 3):
+                raise ValueError("Head.fit val is (z, y) or (z, y, za)")
+            vz = _f32(val[0])
+            if vz.ndim == 1:
+                vz = vz.reshape(1, -1)
+            vy = np.asarray(val[1], dtype=np.float32).reshape(-1)
+            if len(val) == 3 and val[2] is not None:
+                vza = _f32(val[2])
+                if vza.ndim == 1:
+                    vza = vza.reshape(1, -1)
+            if (vza is None) != (za_a is None):
+                raise ValueError("Head.fit val carries za exactly when the fit does")
+        self._core.fit(z, y, za_a, int(epochs), int(batch_size),
+                       vz, vy, vza, bool(verbose), str(prefix))
         return self
 
     def predict(self, z, za=None, out=None):
@@ -1317,15 +1352,45 @@ class Actor:
     def act_dim(self) -> int:
         return int(self._core.act_dim)
 
-    def fit(self, z, a, *, epochs: int = 40, batch_size: int = 32) -> "Actor":
-        """Fit on codes ``z`` against actions ``a``."""
+    def fit(self, z, a, *, epochs: int = 40, batch_size: int = 32,
+            val=None, verbose: bool = False, prefix: str = "") -> "Actor":
+        """Fit on codes ``z`` against actions ``a``.
+
+        Parameters
+        ----------
+        val : tuple, optional
+            Held-out rows ``(z, a)``. Scored forward-only at the end of
+            each epoch, on the training loss's scale: 0.5 * squared error
+            summed over the action dims, mean per row. With ``val``,
+            ``restore_best`` follows that metric instead of the training
+            loss, so the fitted weights can differ from a fit without it.
+        verbose : bool
+            Print one line per epoch, in the Predictor's format:
+            ``epoch=3/40 train_loss=0.01234567`` and `` val=...`` when
+            ``val`` is given. Printing does not change the fit. A verbose
+            fit also answers Ctrl-C between epochs.
+        prefix : str
+            Put in front of each verbose line, as given. Tells fits apart
+            when several run at once on different threads.
+        """
         z = _f32(z)
         if z.ndim == 1:
             z = z.reshape(1, -1)
         a = _f32(a)
         if a.ndim == 1:
             a = a.reshape(1, -1)
-        self._core.fit(z, a, int(epochs), int(batch_size))
+        vz = va = None
+        if val is not None:
+            if len(val) != 2:
+                raise ValueError("Actor.fit val is (z, a)")
+            vz = _f32(val[0])
+            if vz.ndim == 1:
+                vz = vz.reshape(1, -1)
+            va = _f32(val[1])
+            if va.ndim == 1:
+                va = va.reshape(1, -1)
+        self._core.fit(z, a, int(epochs), int(batch_size),
+                       vz, va, bool(verbose), str(prefix))
         return self
 
     def predict(self, z, out=None):

@@ -320,6 +320,16 @@ pip install . --no-build-isolation --force-reinstall --no-deps
 
 (Exact CLion paths change with the version.)
 
+**Seeds are not portable across compilers.** Weight draws and epoch
+shuffles go through the C++ standard library (`std::shuffle` and the
+random distributions), whose results are implementation-defined. An MSVC
+build and a MinGW or GCC build give different weights for the same seed
+and the same data. Saved models load and predict the same under either.
+Refits do not reproduce. Rebuild with the compiler the existing results
+came from; `objdump -p _core*.pyd` shows `MSVCP140.dll` for an MSVC build
+and `libwinpthread-1.dll` for MinGW. A plain `pip install .` on a Windows
+machine with Visual Studio installed builds with MSVC.
+
 ---
 
 ## Quick start

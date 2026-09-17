@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -159,6 +160,13 @@ float Head::Readout() const
 void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float> y,
                int epochs, size_t batch, std::span<const float> za)
 {
+    Fit(z, code_size, y, epochs, batch, za, FitOptions{});
+}
+
+void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float> y,
+               int epochs, size_t batch, std::span<const float> za,
+               const FitOptions& opt)
+{
     if (code_size == 0)
         throw std::invalid_argument("Head::Fit code_size must be > 0");
     const size_t count = y.size();
@@ -170,6 +178,15 @@ void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float
         throw std::invalid_argument("Head::Fit epochs must be > 0");
     if (batch == 0)
         throw std::invalid_argument("Head::Fit batch must be > 0");
+    const size_t val_count = opt.val_y.size();
+    if (val_count == 0 && (!opt.val_z.empty() || !opt.val_za.empty()))
+        throw std::invalid_argument("Head::Fit val needs val_y");
+    if (val_count && opt.val_z.size() != val_count * code_size)
+        throw std::invalid_argument("Head::Fit val_z length must be val count * code_size");
+    if (val_count && za.empty() != opt.val_za.empty())
+        throw std::invalid_argument("Head::Fit val_za must be present iff za is");
+    if (val_count && !za.empty() && opt.val_za.size() != val_count * code_size)
+        throw std::invalid_argument("Head::Fit val_za length must be val count * code_size");
     uses_za_ = !za.empty();
     if (uses_za_ && za.size() != count * code_size)
         throw std::invalid_argument("Head::Fit za length must be count * code_size");
@@ -190,6 +207,9 @@ void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float
     std::iota(idx.begin(), idx.end(), 0);
     std::mt19937_64 rng(cfg_.seed);
 
+    // Fit trains net_ in place, so a throw from on_epoch must not leave a
+    // half-trained net marked fitted.
+    fitted_ = false;
     for (int epoch = 0; epoch < epochs; ++epoch)
     {
         train.SetEpoch(epoch, epochs);
@@ -213,8 +233,31 @@ void Head::Fit(std::span<const float> z, size_t code_size, std::span<const float
             }
             train.Adam();
         }
-        if (nloss)
-            train.Observe(static_cast<float>(epoch_loss / nloss), epoch);
+        const float train_loss =
+            nloss ? static_cast<float>(epoch_loss / nloss) : 0.f;
+        std::optional<float> val_loss;
+        if (val_count)
+        {
+            // Forward only. The next training step runs its own Forward
+            // before Loss, so this leaves no stale state behind.
+            double sum = 0.0;
+            for (size_t i = 0; i < val_count; ++i)
+            {
+                Pack(opt.val_z.data() + i * code_size,
+                     uses_za_ ? opt.val_za.data() + i * code_size : nullptr, field_);
+                net_->Forward(field_);
+                const double d = static_cast<double>(Readout()) -
+                                 static_cast<double>(opt.val_y[i]);
+                sum += 0.5 * d * d;
+            }
+            val_loss = static_cast<float>(sum / static_cast<double>(val_count));
+        }
+        if (val_count)
+            train.Observe(*val_loss, epoch);
+        else if (nloss)
+            train.Observe(train_loss, epoch);
+        if (opt.on_epoch)
+            opt.on_epoch(epoch, epochs, train_loss, val_loss);
     }
     train.RestoreBest();
     fitted_ = true;
